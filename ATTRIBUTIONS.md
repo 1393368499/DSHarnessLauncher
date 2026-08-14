@@ -2,13 +2,16 @@
 
 ## Whale-maid atelier theme
 
-The whale-maid character artwork and the associated atelier-theme visual assets in `public/assets/` were supplied to this project by the repository owner for use in the DSHarness whale-maid theme.
+The whale-maid character artwork and the associated atelier-theme visual assets in `public/assets/` are derived from the [Small-tailqwq/dsh-deep-whale](https://github.com/Small-tailqwq/dsh-deep-whale) project, specifically its `maid-atelier` skin package (`@dsh-external/dsh-client-ui-skin-maid-atelier`).
 
-- **Original creator / publication URL:** not provided at the time of import.
-- **Repository attribution:** “Artwork supplied by the project owner; original source pending.”
+- **Theme source:** [Small-tailqwq/dsh-deep-whale](https://github.com/Small-tailqwq/dsh-deep-whale)
+- **Character-image origin:** 上善 — 鲸鱼娘角色形象原作
+- **DeepSeek maid whale-girl adaptation:** ZipZipPipe — 加入 DeepSeek 元素的女仆鲸鱼娘二次设计
+- **Theme package / distribution:** Small-tailqwq/dsh-deep-whale
+- **Licence:** [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/): attribution required, non-commercial use only, and derivatives must be shared under the same licence.
 - **Use in this repository:** bundled only as the optional `鲸鱼娘工坊` theme, including its two character illustrations, atelier background and whale-maid window icon.
 
-This entry is deliberately not an assertion of authorship or a grant of permission. Before publishing a public installer or redistributing these assets outside this repository, replace the pending source entry with the original artist name, original URL and licence/permission terms, or replace the artwork with assets whose redistribution terms are known.
+When redistributing the whale-maid theme, retain this attribution and the same CC BY-NC-SA 4.0 licence. It must not be included in a commercial DSHarness distribution without separate permission from the relevant rights holders.
 
 ## DSHarness black-whale icon
 

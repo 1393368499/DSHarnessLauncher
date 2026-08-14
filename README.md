@@ -28,4 +28,4 @@ For production releases, use the signed GitHub Releases workflow described in th
 
 ## Artwork attribution
 
-See [ATTRIBUTIONS.md](ATTRIBUTIONS.md) for the whale-maid atelier theme's source status and the black-whale icon attribution. The whale-maid artwork is recorded as supplied by the project owner; its original creator and publication URL must be added before public redistribution.
+See [ATTRIBUTIONS.md](ATTRIBUTIONS.md) for the whale-maid atelier theme's source, creator chain and CC BY-NC-SA 4.0 licence terms, as well as the black-whale icon attribution.
