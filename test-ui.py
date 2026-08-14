@@ -16,6 +16,8 @@ with sync_playwright() as playwright:
 
     assert page.title() == "DSHarness"
     assert page.get_by_text("完整 Harness，原生桌面工作台。").is_visible()
+    assert page.locator("html").get_attribute("data-theme") == "light"
+    assert "black-whale-centered.png" in page.locator(".brand img").get_attribute("src")
     assert page.get_by_role("button", name="↻ 更新").is_visible()
     assert page.get_by_role("button", name="⌁ 修复").is_visible()
 
