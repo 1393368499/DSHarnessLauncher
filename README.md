@@ -5,9 +5,16 @@ DSHarness is a Windows desktop workbench for the complete DeepSeek Harness core.
 ## Current delivery model
 
 - The desktop shell is built with Tauri and uses the centered black-whale icon by default.
-- The complete Harness core is sourced only from the official `deepseek-ai/deepseek-harness` repository.
+- The complete Harness core is sourced only from the official [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) repository; DSHarness does not maintain a fork of the core.
 - Node.js and the full Harness runtime are verified during installation; no trimmed core is used.
 - Desktop releases are published from this repository's GitHub Releases. Core updates continue to check the official Harness repository.
+
+## Update sources
+
+| What is updated | Source |
+| --- | --- |
+| DSHarness desktop application | [1393368499/DSHarness Releases](https://github.com/1393368499/DSHarness/releases) |
+| Harness core | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (official upstream) |
 
 ## Development
 

@@ -9,7 +9,7 @@ Deliver a Windows x64 desktop application that is usable immediately after insta
 | Component | Authoritative source | Verification |
 | --- | --- | --- |
 | DSHarness desktop shell | This repository and its signed GitHub Releases | Signed release metadata and installer signature |
-| Harness core | `deepseek-ai/deepseek-harness` | Pinned commit SHA, locked dependency graph and post-build health check |
+| Harness core | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (official upstream) | Pinned commit SHA, locked dependency graph and post-build health check |
 | Node.js | nodejs.org | Official SHA-256 manifest |
 | User-installed themes | GitHub URL supplied in the workshop | Manifest, size/file limits and static safety audit before activation |
 
