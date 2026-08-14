@@ -1,0 +1,27 @@
+# JavaScript dependencies and generated web assets
+node_modules/
+dist/
+
+# Rust / Tauri build products
+src-tauri/target/
+
+# Local test artefacts
+.test-venv/
+test-artifacts/
+__pycache__/
+*.py[cod]
+
+# Local configuration, signing material and installer output
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.sig
+release/
+bundle/
+
+# Editor and operating-system noise
+.DS_Store
+Thumbs.db
+.vscode/
