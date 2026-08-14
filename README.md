@@ -25,3 +25,7 @@ For production releases, use the signed GitHub Releases workflow described in th
 - `src-tauri/` — native shell, installer and runtime orchestration
 - `public/assets/` — bundled theme and icon assets
 - `src-tauri/bootstrap/` — verified Harness, Node.js and theme installation routines
+
+## Artwork attribution
+
+See [ATTRIBUTIONS.md](ATTRIBUTIONS.md) for the whale-maid atelier theme's source status and the black-whale icon attribution. The whale-maid artwork is recorded as supplied by the project owner; its original creator and publication URL must be added before public redistribution.
