@@ -1,38 +1,44 @@
-# DSHarness
+﻿# DSH 鲸鱼娘启动器
 
-DSHarness is a Windows desktop workbench for the complete DeepSeek Harness core. It provides a native desktop shell, light/dark/whale-maid themes, a plugin workshop, web-search capability and a local security-audit entry point.
+启动器已作为 `dsh-deep-whale` 项目组件分发，不依赖固定盘符或固定 Harness 路径。
 
-## Current delivery model
+## 首次启动
 
-- The desktop shell is built with Tauri and uses the centered black-whale icon by default.
-- The complete Harness core is sourced only from the official [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) repository; DSHarness does not maintain a fork of the core.
-- Node.js and the full Harness runtime are verified during installation; no trimmed core is used.
-- Desktop releases are published from this repository's GitHub Releases. Core updates continue to check the official Harness repository.
+1. 运行 `DSH.exe`。
+2. 启动器读取 `%LOCALAPPDATA%\DSH\launcher.json` 并验证已保存的 Harness 路径。
+3. 如果未找到完整 Harness，弹出目录选择器。默认选择启动器所在目录，并在其中创建 `deepseek-harness` 子目录。
+4. 启动器从 <https://github.com/deepseek-ai/deepseek-harness> 克隆完整源码、安装依赖、生成运行时与 WebUI，并注册项目内的 `maid-atelier` 主题。
 
-## Update sources
+## 日常使用
 
-| What is updated | Source |
-| --- | --- |
-| DSHarness desktop application | [1393368499/DSHarness Releases](https://github.com/1393368499/DSHarness/releases) |
-| Harness core | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) (official upstream) |
+- 每次启动自动检查官方 Harness 更新；仅在工作区干净且可以快进时自动更新。
+- “检查更新”按顺序完成：先更新 Harness 核心、重新构建，再校验启动器和新核心的兼容性；只有启动器自身是带远端的干净 Git 工作区时，才会安全地快进更新启动器。便携版会跳过启动器自更新，但仍会记录兼容性结果。
+- “检查更新”还会读取 Web profile 中已启用的第三方插件，通过禁用系统代理的 GitHub REST API 直连检查 Release、Tag 或默认分支提交，并通过 Harness 插件管理命令应用可用更新；本地 `file:`/`link:` 插件和显式锁定 Git ref 的插件不会被改动。
+- 插件更新通道默认为自动：稳定版 Harness 只跟踪稳定版；alpha/beta/rc Harness 会同时检查稳定版和预发布版，读取候选插件的 `peerDependencies`，只安装与当前核心兼容的最高版本。安装时使用明确版本号，因此不会受 npm `latest` 标签限制。
+- 同一个 GitHub 仓库提供的多个插件会合并成一次更新；配置的 npm 镜像不可用时自动切换到官方 npm 源。插件更新前后的启用/停用列表会原样保留，避免 Harness 更新命令意外停用插件。
+- 对 `dsh-deep-whale` 这类一个仓库包含多个 `#path:` 子包的插件，启动器使用受管源码缓存更新：整仓只下载一次，再从各自子目录安装，避免 `plugin update` 丢失子路径并生成空占位包。
+- 点击“插件管理”可查看 Web profile 的插件、启用或停用入口，以及更新单个插件。更新后启动器会自动应用已知的核心 API 兼容迁移；离线停用会在 `%USERPROFILE%\\.dsh\\profiles\\web\\backups` 留下可恢复副本。
+- GitHub 查询结果缓存 15 分钟；公共仓库可匿名检查，也可通过当前进程或 Windows 用户级的 `GH_TOKEN`、`GITHUB_TOKEN` 环境变量提高 API 限额。
+- “打开 WebUI”使用保存的 Harness 路径启动服务，并通过系统默认浏览器打开。
+- “打开终端”在保存的 Harness 目录中执行命令。
+- 点击关闭按钮后隐藏到托盘；托盘菜单中的“彻底退出”才会结束启动器。
 
-## Development
+## 文件与状态
 
-```powershell
-npm ci
-npm run build
-npx tauri dev
-```
+- 无控制台入口：`DSH.exe`
+- 界面脚本：`DSH-UI.ps1`
+- 安装与更新脚本：`DSH-Launcher.ps1`
+- 插件管理后端：`DSH-PluginManager.ps1`
+- 启动器兼容性记录：`%LOCALAPPDATA%\DSH\launcher-core-compatibility.json`
+- 位置记录：`%LOCALAPPDATA%\DSH\launcher.json`
+- 启动器日志：`%LOCALAPPDATA%\DSH\logs\launcher.log`
+- 插件更新缓存：`%LOCALAPPDATA%\DSH\github-plugin-cache.json`
+- Web 日志：`<Harness 安装目录>\dsh-web.log`
 
-For production releases, use the signed GitHub Releases workflow described in the release plan. Never commit signing keys, downloaded runtimes, build directories or local settings.
+运行前需要系统能够调用 Git、Node.js 和 pnpm。
 
-## Project layout
+新版核心的 `fs-ext` 需要本机 C++ 编译环境。启动器会检测已安装的 Visual Studio 与 Windows SDK，并为本次更新设置构建环境；安装成功后记录锁文件和 Node.js 版本。中断或失败后再次检查更新，会先恢复依赖，再重建运行时。
 
-- `src/` — desktop workbench interface
-- `src-tauri/` — native shell, installer and runtime orchestration
-- `public/assets/` — bundled theme and icon assets
-- `src-tauri/bootstrap/` — verified Harness, Node.js and theme installation routines
+构建输出统一按 UTF-8 解码，并过滤 PowerShell 对原生命令标准错误流生成的伪 `RemoteException`，终端里显示的警告不再被误报成更新失败。
 
-## Artwork attribution
-
-See [ATTRIBUTIONS.md](ATTRIBUTIONS.md) for the whale-maid atelier theme's source, creator chain and CC BY-NC-SA 4.0 licence terms, as well as the black-whale icon attribution.
+便携版启动器除了 Git 仓库通道，也支持签名散列保护的 ZIP 更新源。可在 `launcher-manifest.json` 的 `update.manifestSources` 中配置清单地址，或设置以分号分隔的 `DSH_LAUNCHER_UPDATE_MANIFESTS`。更新清单需要包含 `schemaVersion`、`version`、`packageUrl` 和 ZIP 的 `sha256`；应用前会校验散列、文件清单及当前 Harness 兼容性，并在 `%LOCALAPPDATA%\DSH\launcher-backups` 留下备份。
