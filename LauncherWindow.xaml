@@ -310,10 +310,11 @@
 
                         <Grid Grid.Row="3" Margin="0,12,0,0">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
+                                 <ColumnDefinition Width="*" />
+                                 <ColumnDefinition Width="*" />
+                                 <ColumnDefinition Width="*" />
+                                 <ColumnDefinition Width="*" />
+                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
                             <Button x:Name="RestartButton" Grid.Column="0" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0">
                                 <StackPanel Orientation="Horizontal">
@@ -333,7 +334,13 @@
                                     <TextBlock Text="插件管理" />
                                 </StackPanel>
                             </Button>
-                            <Button x:Name="OpenFolderButton" Grid.Column="3" Style="{StaticResource SecondaryButton}">
+                            <Button x:Name="DiagnosticsButton" Grid.Column="3" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="✓" FontSize="15" Margin="0,0,7,0" />
+                                    <TextBlock Text="系统诊断" />
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="OpenFolderButton" Grid.Column="4" Style="{StaticResource SecondaryButton}">
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="▱" FontSize="16" Margin="0,0,7,0" />
                                     <TextBlock Text="打开目录" />
@@ -405,7 +412,7 @@
                                 </Grid>
                                 <Grid Grid.Row="3" Margin="0,10,0,0">
                                     <TextBlock Text="启动器版本" Foreground="{StaticResource TextMuted}" FontSize="11" />
-                                    <TextBlock Text="v1.3.0" Foreground="{StaticResource TextPrimary}" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Right" />
+                                    <TextBlock Text="v2.0.0" Foreground="{StaticResource TextPrimary}" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Right" />
                                 </Grid>
                             </Grid>
                         </Border>

@@ -508,6 +508,8 @@ function Get-LatestGitHubVersion {
 try {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $bundleNames = @($manifest.dsh.profile.bundles)
+    $script:activationNames = @($bundleNames)
+    $script:replacementNames = @{}
     $bundleSet = @{}
     foreach ($bundleName in $bundleNames) { $bundleSet[[string]$bundleName] = $true }
 
@@ -648,8 +650,8 @@ try {
         if (-not (Test-Path -LiteralPath $manifestPath)) { return }
         $manifestAfterUpdate = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $bundlesAfterUpdate = @($manifestAfterUpdate.dsh.profile.bundles)
-        if (($bundlesAfterUpdate -join "`0") -ne ($bundleNames -join "`0")) {
-            $manifestAfterUpdate.dsh.profile.bundles = @($bundleNames)
+        if (($bundlesAfterUpdate -join "`0") -ne ($script:activationNames -join "`0")) {
+            $manifestAfterUpdate.dsh.profile.bundles = @($script:activationNames)
             $manifestJson = $manifestAfterUpdate | ConvertTo-Json -Depth 100
             [System.IO.File]::WriteAllText($manifestPath, $manifestJson + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
             Write-PluginStatus 'Restored the Web plugin activation list after package updates.' 'OK'
@@ -664,7 +666,7 @@ try {
             [Parameter(Mandatory)][string[]]$Names,
             [string]$TargetVersion,
             [string]$Registry,
-            [ValidateSet('update', 'add')][string]$Operation = 'update'
+            [ValidateSet('update', 'add', 'remove')][string]$Operation = 'update'
         )
 
         $operation = $Operation
@@ -673,14 +675,16 @@ try {
         } else {
             @($Names | ForEach-Object { "$_@$TargetVersion" })
         }
-        $arguments = @(
-            'dsh', 'plugin', '--profile', $ProfileName, $operation,
-            '--fetch-timeout=300000',
-            '--fetch-retries=2',
-            '--fetch-retry-mintimeout=10000',
-            '--fetch-retry-maxtimeout=60000',
-            '--network-concurrency=1'
-        )
+        $arguments = @('dsh', 'plugin', '--profile', $ProfileName, $operation)
+        if ($Operation -ne 'remove') {
+            $arguments += @(
+                '--fetch-timeout=300000',
+                '--fetch-retries=2',
+                '--fetch-retry-mintimeout=10000',
+                '--fetch-retry-maxtimeout=60000',
+                '--network-concurrency=1'
+            )
+        }
         if ($Operation -eq 'update' -and [string]::IsNullOrWhiteSpace($TargetVersion)) { $arguments += '--latest' }
         $arguments += $targets
         Push-Location -LiteralPath $HarnessPath
@@ -756,15 +760,36 @@ try {
             & $tar.Source '-xzf' $archivePath '-C' $sourceRoot
             if ($LASTEXITCODE -ne 0) { throw "Failed to extract the $repo source archive." }
         }
+        $migrations = New-Object System.Collections.ArrayList
         foreach ($groupUpdate in $GroupUpdates) {
             $bundlePath = Join-Path $packageRoot ([string]$groupUpdate.Plugin.Source.Path)
             $bundleManifestPath = Join-Path $bundlePath 'package.json'
             if (-not (Test-Path -LiteralPath $bundleManifestPath)) { throw "Managed GitHub source is missing $($groupUpdate.Plugin.Source.Path)/package.json." }
             $bundleManifest = Get-Content -LiteralPath $bundleManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ([string]$bundleManifest.name -ne [string]$groupUpdate.Plugin.Name -or $null -eq $bundleManifest.dsh.bundle) {
-                throw "Managed GitHub source path $($groupUpdate.Plugin.Source.Path) is not bundle $($groupUpdate.Plugin.Name)."
+            $newName = [string]$bundleManifest.name
+            if ([string]::IsNullOrWhiteSpace($newName) -or $null -eq $bundleManifest.dsh.bundle) {
+                throw "Managed GitHub source path $($groupUpdate.Plugin.Source.Path) is not a valid Harness bundle."
             }
             Invoke-HarnessPluginUpdate -Names @($bundlePath) -Operation add
+            $oldName = [string]$groupUpdate.Plugin.Name
+            if ($newName -ne $oldName) {
+                [void]$migrations.Add([pscustomobject]@{ OldName = $oldName; NewName = $newName })
+            }
+        }
+
+        # Repositories occasionally change an npm scope while retaining the same
+        # bundle path. Add every replacement first, then remove the obsolete names
+        # so a partial download can never leave the profile without the plugin.
+        if ($migrations.Count -gt 0) {
+            $oldNames = @($migrations | ForEach-Object { $_.OldName } | Select-Object -Unique)
+            Invoke-HarnessPluginUpdate -Names $oldNames -Operation remove
+            foreach ($migration in $migrations) {
+                $script:replacementNames[$migration.OldName] = $migration.NewName
+                $script:activationNames = @($script:activationNames | ForEach-Object {
+                    if ([string]$_ -eq $migration.OldName) { $migration.NewName } else { [string]$_ }
+                })
+                Write-PluginStatus "$($migration.OldName): package identity migrated to $($migration.NewName)." 'OK'
+            }
         }
     }
 
@@ -841,26 +866,31 @@ try {
         ''
     }
     foreach ($update in $updates) {
+        $effectiveName = if ($script:replacementNames.ContainsKey([string]$update.Plugin.Name)) {
+            [string]$script:replacementNames[[string]$update.Plugin.Name]
+        } else {
+            [string]$update.Plugin.Name
+        }
         if ($update.Kind -eq 'commit') {
-            $installedCommit = Get-InstalledCommit $newLockText $update.Plugin.Name
+            $installedCommit = Get-InstalledCommit $newLockText $effectiveName
             if ($installedCommit -eq $update.Expected) {
-                Write-PluginStatus "$($update.Plugin.Name): updated to commit $($installedCommit.Substring(0, 8))." 'OK'
+                Write-PluginStatus "$effectiveName`: updated to commit $($installedCommit.Substring(0, 8))." 'OK'
             } else {
-                Write-PluginStatus "$($update.Plugin.Name): pnpm did not reach GitHub commit $($update.Expected.Substring(0, 8))." 'WARN'
+                Write-PluginStatus "$effectiveName`: pnpm did not reach GitHub commit $($update.Expected.Substring(0, 8))." 'WARN'
             }
             continue
         }
 
-        $installedManifestPath = Join-Path $ProfilePath "node_modules\$($update.Plugin.Name)\package.json"
+        $installedManifestPath = Join-Path $ProfilePath "node_modules\$effectiveName\package.json"
         $newVersion = if (Test-Path -LiteralPath $installedManifestPath) {
             [string](Get-Content -LiteralPath $installedManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json).version
         } else {
             ''
         }
         if ($newVersion -eq $update.Expected) {
-            Write-PluginStatus "$($update.Plugin.Name): updated to $newVersion." 'OK'
+            Write-PluginStatus "$effectiveName`: updated to $newVersion." 'OK'
         } else {
-            Write-PluginStatus "$($update.Plugin.Name): pnpm installed '$newVersion'; GitHub latest is $($update.Expected)." 'WARN'
+            Write-PluginStatus "$effectiveName`: pnpm installed '$newVersion'; GitHub latest is $($update.Expected)." 'WARN'
         }
     }
     if ($applyFailures.Count -gt 0) {

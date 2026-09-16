@@ -1,0 +1,31 @@
+# ============================================================
+# DSH Launcher 发布仓库 —— 只提交启动器本体，其余为本地资料
+# ============================================================
+
+# 上游 DSH 源码克隆（约 2GB，自带独立 .git，绝不入库）
+/deepseek-harness/
+
+# 本地开发 / 构建 / 备份资料
+/backups/
+/artifacts/
+/plugin-fix/
+/plugins/
+/reports/
+/.mimosa/
+/_remote-check/
+
+# 一次性备份文件（*.bak）
+*.bak
+
+# 开发期遗留的图标变体与快捷方式
+/DSH.lnk
+/DSH.ico
+/DSH-v2.ico
+/DSH-shortcut-v3.ico
+/DSH-unified-v4.ico
+
+# assets 只发布启动器运行期真正引用的两张图
+#（DSH-UI.ps1 中 maidImagePath / brandIconPath / whalePath）
+/assets/*
+!/assets/DSH-white-frame-v5.png
+!/assets/DSHarness-v2.png

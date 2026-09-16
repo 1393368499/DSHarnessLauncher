@@ -23,7 +23,8 @@ function ConvertTo-LauncherVersion {
 
 function Get-PortableSourceText {
     param([Parameter(Mandatory)][string]$Source)
-    if ($Source -match '^https?://') {
+    if ($Source -match '^http://') { throw 'Insecure HTTP launcher update feeds are not allowed.' }
+    if ($Source -match '^https://') {
         return [string](Invoke-WebRequest -UseBasicParsing -Uri $Source -TimeoutSec 20).Content
     }
     $resolved = [Environment]::ExpandEnvironmentVariables($Source)
@@ -33,8 +34,9 @@ function Get-PortableSourceText {
 
 function Resolve-PortablePackageSource {
     param([Parameter(Mandatory)][string]$ManifestSource, [Parameter(Mandatory)][string]$PackageSource)
-    if ($PackageSource -match '^https?://') { return $PackageSource }
-    if ($ManifestSource -match '^https?://') {
+    if ($PackageSource -match '^http://') { throw 'Insecure HTTP launcher packages are not allowed.' }
+    if ($PackageSource -match '^https://') { return $PackageSource }
+    if ($ManifestSource -match '^https://') {
         return ([Uri]::new([Uri]$ManifestSource, $PackageSource)).AbsoluteUri
     }
     $manifestFile = [Environment]::ExpandEnvironmentVariables($ManifestSource)
@@ -63,7 +65,8 @@ function Invoke-PortableLauncherUpdate {
     $checkedFeeds = 0
     foreach ($source in $sources) {
         try {
-            if ($source -notmatch '^https?://') {
+            if ($source -match '^http://') { throw 'Insecure HTTP launcher update feeds are not allowed.' }
+            if ($source -notmatch '^https://') {
                 $sourcePath = [Environment]::ExpandEnvironmentVariables($source)
                 if (-not [System.IO.Path]::IsPathRooted($sourcePath)) { $sourcePath = Join-Path $LauncherRoot $sourcePath }
                 if (-not (Test-Path -LiteralPath $sourcePath)) { continue }
@@ -101,13 +104,34 @@ function Invoke-PortableLauncherUpdate {
     New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
     try {
         $packageSource = Resolve-PortablePackageSource $candidate.Source ([string]$candidate.Feed.packageUrl)
-        if ($packageSource -match '^https?://') {
+        if ($packageSource -match '^https://') {
             Invoke-WebRequest -UseBasicParsing -Uri $packageSource -OutFile $archivePath -TimeoutSec 120
         } else {
             Copy-Item -LiteralPath $packageSource -Destination $archivePath -Force
         }
         $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
         if ($actualHash -ne ([string]$candidate.Feed.sha256).ToUpperInvariant()) { throw 'Portable launcher package SHA-256 verification failed.' }
+        if ($null -ne $candidate.Feed.packageSize -and [long]$candidate.Feed.packageSize -gt 0) {
+            if ((Get-Item -LiteralPath $archivePath).Length -ne [long]$candidate.Feed.packageSize) {
+                throw 'Portable launcher package size does not match its signed feed metadata.'
+            }
+        }
+
+        # Validate every archive destination before extraction. Expand-Archive alone
+        # must not be trusted with entries such as ..\..\file (Zip Slip).
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [IO.Compression.ZipFile]::OpenRead($archivePath)
+        try {
+            $extractRoot = [IO.Path]::GetFullPath($extractPath).TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+            foreach ($entry in $zip.Entries) {
+                $entryPath = [IO.Path]::GetFullPath((Join-Path $extractPath $entry.FullName))
+                if (-not $entryPath.StartsWith($extractRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Portable launcher package contains an unsafe archive entry: $($entry.FullName)"
+                }
+            }
+        } finally {
+            $zip.Dispose()
+        }
         Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath -Force
         $candidateManifests = @(Get-ChildItem -LiteralPath $extractPath -Filter $manifestName -File -Recurse)
         if ($candidateManifests.Count -ne 1) { throw 'Portable launcher package must contain exactly one launcher-manifest.json.' }
@@ -119,6 +143,17 @@ function Invoke-PortableLauncherUpdate {
         foreach ($relativeFile in $requiredFiles) {
             if ([string]::IsNullOrWhiteSpace([string]$relativeFile) -or [System.IO.Path]::IsPathRooted([string]$relativeFile) -or ([string]$relativeFile) -match '(^|[\\/])\.\.([\\/]|$)') { throw "Unsafe portable package path: $relativeFile" }
             if (-not (Test-Path -LiteralPath (Join-Path $packageRoot ([string]$relativeFile)))) { throw "Portable package is missing required file: $relativeFile" }
+        }
+        $publisherThumbprints = @($candidate.Feed.publisherThumbprints | ForEach-Object { ([string]$_).Replace(' ', '').ToUpperInvariant() } | Where-Object { $_ })
+        if ($publisherThumbprints.Count -gt 0) {
+            foreach ($relativeFile in @($requiredFiles | Where-Object { [IO.Path]::GetExtension([string]$_) -in @('.ps1', '.exe') })) {
+                $signedFile = Join-Path $packageRoot ([string]$relativeFile)
+                $signature = Get-AuthenticodeSignature -LiteralPath $signedFile
+                $thumbprint = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint.ToUpperInvariant() } else { '' }
+                if ($signature.Status -ne 'Valid' -or $publisherThumbprints -notcontains $thumbprint) {
+                    throw "Portable launcher publisher verification failed: $relativeFile"
+                }
+            }
         }
         $compatibilityScript = Join-Path $packageRoot 'DSH-LauncherCompatibility.ps1'
         & 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File $compatibilityScript -HarnessPath $HarnessPath -LauncherRoot $packageRoot
@@ -137,6 +172,10 @@ function Invoke-PortableLauncherUpdate {
             $appliedFiles += [string]$relativeFile
         }
         Write-Output "[DSH][LauncherUpdate][OK] Portable launcher updated: $($localManifest.version) -> $($packageManifest.version). Backup: $backupRoot"
+        $allBackups = @(Get-ChildItem -LiteralPath (Split-Path -Parent $backupRoot) -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+        foreach ($expiredBackup in @($allBackups | Select-Object -Skip 5)) {
+            Remove-Item -LiteralPath $expiredBackup.FullName -Recurse -Force
+        }
     } catch {
         if (-not [string]::IsNullOrWhiteSpace($backupRoot) -and (Test-Path -LiteralPath $backupRoot)) {
             foreach ($relativeFile in $appliedFiles) {

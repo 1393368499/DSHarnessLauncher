@@ -1,4 +1,4 @@
-﻿# DSH 鲸鱼娘启动器
+﻿# DSH 鲸鱼娘启动器 v2
 
 启动器已作为 `dsh-deep-whale` 项目组件分发，不依赖固定盘符或固定 Harness 路径。
 
@@ -11,13 +11,15 @@
 
 ## 日常使用
 
-- 每次启动自动检查官方 Harness 更新；仅在工作区干净且可以快进时自动更新。
+- 启动器采用单实例运行；重复点击 `DSH.exe` 会激活已有窗口，不再重复创建托盘图标或后台进程。Windows 异常退出后可通过应用重启机制恢复。
 - “检查更新”按顺序完成：先更新 Harness 核心、重新构建，再校验启动器和新核心的兼容性；只有启动器自身是带远端的干净 Git 工作区时，才会安全地快进更新启动器。便携版会跳过启动器自更新，但仍会记录兼容性结果。
 - “检查更新”还会读取 Web profile 中已启用的第三方插件，通过禁用系统代理的 GitHub REST API 直连检查 Release、Tag 或默认分支提交，并通过 Harness 插件管理命令应用可用更新；本地 `file:`/`link:` 插件和显式锁定 Git ref 的插件不会被改动。
 - 插件更新通道默认为自动：稳定版 Harness 只跟踪稳定版；alpha/beta/rc Harness 会同时检查稳定版和预发布版，读取候选插件的 `peerDependencies`，只安装与当前核心兼容的最高版本。安装时使用明确版本号，因此不会受 npm `latest` 标签限制。
 - 同一个 GitHub 仓库提供的多个插件会合并成一次更新；配置的 npm 镜像不可用时自动切换到官方 npm 源。插件更新前后的启用/停用列表会原样保留，避免 Harness 更新命令意外停用插件。
 - 对 `dsh-deep-whale` 这类一个仓库包含多个 `#path:` 子包的插件，启动器使用受管源码缓存更新：整仓只下载一次，再从各自子目录安装，避免 `plugin update` 丢失子路径并生成空占位包。
+- 插件仓库更换 npm 作用域或包名时，启动器会先安装并验证新身份，再移除旧身份，同时迁移原有启用/停用状态。`dsh-deep-whale` 从 `@dsh-external` 到 `@smalltailqwq` 的升级可直接完成。
 - 点击“插件管理”可查看 Web profile 的插件、启用或停用入口，以及更新单个插件。更新后启动器会自动应用已知的核心 API 兼容迁移；离线停用会在 `%USERPROFILE%\\.dsh\\profiles\\web\\backups` 留下可恢复副本。
+- 点击“系统诊断”可一次检查启动器文件与语法、Git/Node.js/pnpm、官方核心来源与构建状态、Web profile 插件、服务端口和磁盘空间；结构化报告写入 `%LOCALAPPDATA%\DSH\diagnostics-latest.json`。
 - GitHub 查询结果缓存 15 分钟；公共仓库可匿名检查，也可通过当前进程或 Windows 用户级的 `GH_TOKEN`、`GITHUB_TOKEN` 环境变量提高 API 限额。
 - “打开 WebUI”使用保存的 Harness 路径启动服务，并通过系统默认浏览器打开。
 - “打开终端”在保存的 Harness 目录中执行命令。
@@ -32,6 +34,8 @@
 - 启动器兼容性记录：`%LOCALAPPDATA%\DSH\launcher-core-compatibility.json`
 - 位置记录：`%LOCALAPPDATA%\DSH\launcher.json`
 - 启动器日志：`%LOCALAPPDATA%\DSH\logs\launcher.log`
+- 崩溃日志：`%LOCALAPPDATA%\DSH\logs\launcher-crash.log`
+- 系统诊断报告：`%LOCALAPPDATA%\DSH\diagnostics-latest.json`
 - 插件更新缓存：`%LOCALAPPDATA%\DSH\github-plugin-cache.json`
 - Web 日志：`<Harness 安装目录>\dsh-web.log`
 
@@ -41,4 +45,6 @@
 
 构建输出统一按 UTF-8 解码，并过滤 PowerShell 对原生命令标准错误流生成的伪 `RemoteException`，终端里显示的警告不再被误报成更新失败。
 
-便携版启动器除了 Git 仓库通道，也支持签名散列保护的 ZIP 更新源。可在 `launcher-manifest.json` 的 `update.manifestSources` 中配置清单地址，或设置以分号分隔的 `DSH_LAUNCHER_UPDATE_MANIFESTS`。更新清单需要包含 `schemaVersion`、`version`、`packageUrl` 和 ZIP 的 `sha256`；应用前会校验散列、文件清单及当前 Harness 兼容性，并在 `%LOCALAPPDATA%\DSH\launcher-backups` 留下备份。
+便携版启动器除了 Git 仓库通道，也支持签名散列保护的 ZIP 更新源。可在 `launcher-manifest.json` 的 `update.manifestSources` 中配置清单地址，或设置以分号分隔的 `DSH_LAUNCHER_UPDATE_MANIFESTS`。更新清单需要包含 `schemaVersion`、`version`、`packageUrl` 和 ZIP 的 `sha256`，可选 `packageSize` 与 `publisherThumbprints`。更新器只接受 HTTPS 或本地源，并在解压前阻止目录穿越；应用前校验散列、可选 Authenticode 发布者、文件清单及当前 Harness 兼容性。更新失败自动恢复，备份保留最近 5 份。
+
+启动器日志超过 8 MB、Web 日志超过 20 MB 时会自动轮转，避免长时间运行后日志无限增长。

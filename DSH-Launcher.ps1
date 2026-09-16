@@ -34,7 +34,29 @@ $updateResult = [ordered]@{
     warnings = @()
 }
 
+function Invoke-LauncherLogRotation {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [long]$MaximumBytes = 8MB,
+        [int]$Keep = 5
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if ((Get-Item -LiteralPath $Path).Length -le $MaximumBytes) { return }
+    for ($index = $Keep; $index -ge 1; $index--) {
+        $destination = "$Path.$index"
+        if ($index -eq $Keep -and (Test-Path -LiteralPath $destination)) {
+            Remove-Item -LiteralPath $destination -Force
+        }
+        $source = if ($index -eq 1) { $Path } else { "$Path.$($index - 1)" }
+        if (Test-Path -LiteralPath $source) {
+            Move-Item -LiteralPath $source -Destination $destination -Force
+        }
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $launcherLogRoot | Out-Null
+Invoke-LauncherLogRotation -Path $launcherLog
 
 function Save-UpdateResult {
     $script:updateResult.warnings = @($script:updateWarnings)

@@ -9,13 +9,160 @@ Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
+
 public static class DshApplicationIdentity
 {
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    private struct PROPERTYKEY
+    {
+        public Guid fmtid;
+        public uint pid;
+
+        public PROPERTYKEY(Guid formatId, uint propertyId)
+        {
+            fmtid = formatId;
+            pid = propertyId;
+        }
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct PROPVARIANT
+    {
+        [FieldOffset(0)] public ushort vt;
+        [FieldOffset(8)] public IntPtr pointerValue;
+
+        public static PROPVARIANT FromString(string value)
+        {
+            PROPVARIANT result = new PROPVARIANT();
+            result.vt = 31; // VT_LPWSTR
+            result.pointerValue = Marshal.StringToCoTaskMemUni(value ?? String.Empty);
+            return result;
+        }
+    }
+
+    [ComImport]
+    [Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IPropertyStore
+    {
+        [PreserveSig] int GetCount(out uint propertyCount);
+        [PreserveSig] int GetAt(uint propertyIndex, out PROPERTYKEY key);
+        [PreserveSig] int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
+        [PreserveSig] int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
+        [PreserveSig] int Commit();
+    }
+
+    private static readonly Guid AppUserModelFormatId = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+    private static readonly Guid PropertyStoreInterfaceId = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern int SetCurrentProcessExplicitAppUserModelID(string appID);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void SHGetPropertyStoreFromParsingName(
+        [MarshalAs(UnmanagedType.LPWStr)] string path,
+        IntPtr bindContext,
+        uint flags,
+        ref Guid interfaceId,
+        [MarshalAs(UnmanagedType.Interface)] out IPropertyStore propertyStore);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern void SHChangeNotify(
+        uint eventId,
+        uint flags,
+        [MarshalAs(UnmanagedType.LPWStr)] string item1,
+        IntPtr item2);
+
+    [DllImport("ole32.dll")]
+    private static extern int PropVariantClear(ref PROPVARIANT value);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string className, string windowName);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr windowHandle, int command);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr windowHandle);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern int RegisterApplicationRestart(string commandLineArgs, int flags);
+
+    [DllImport("kernel32.dll")]
+    private static extern int UnregisterApplicationRestart();
+
+    private static void SetString(IPropertyStore store, uint propertyId, string value)
+    {
+        PROPERTYKEY key = new PROPERTYKEY(AppUserModelFormatId, propertyId);
+        PROPVARIANT propertyValue = PROPVARIANT.FromString(value);
+        try
+        {
+            Marshal.ThrowExceptionForHR(store.SetValue(ref key, ref propertyValue));
+        }
+        finally
+        {
+            PropVariantClear(ref propertyValue);
+        }
+    }
+
+    private static void ApplyIdentity(
+        IPropertyStore store,
+        string appId,
+        string relaunchCommand,
+        string displayName,
+        string iconResource)
+    {
+        SetString(store, 5, appId);          // System.AppUserModel.ID
+        SetString(store, 2, relaunchCommand); // System.AppUserModel.RelaunchCommand
+        SetString(store, 4, displayName);     // System.AppUserModel.RelaunchDisplayNameResource
+        SetString(store, 3, iconResource);    // System.AppUserModel.RelaunchIconResource
+        Marshal.ThrowExceptionForHR(store.Commit());
+    }
+
+    public static void SetShortcutIdentity(
+        string shortcutPath,
+        string appId,
+        string relaunchCommand,
+        string displayName,
+        string iconResource)
+    {
+        IPropertyStore store;
+        Guid interfaceId = PropertyStoreInterfaceId;
+        SHGetPropertyStoreFromParsingName(shortcutPath, IntPtr.Zero, 2, ref interfaceId, out store); // GPS_READWRITE
+        try
+        {
+            ApplyIdentity(store, appId, relaunchCommand, displayName, iconResource);
+        }
+        finally
+        {
+            if (store != null) Marshal.FinalReleaseComObject(store);
+        }
+        SHChangeNotify(0x00002000, 0x0005, shortcutPath, IntPtr.Zero); // SHCNE_UPDATEITEM, SHCNF_PATHW
+    }
+
+    public static bool ActivateExistingWindow()
+    {
+        IntPtr handle = FindWindow(null, "DSH");
+        if (handle == IntPtr.Zero) return false;
+        if (IsIconic(handle)) ShowWindow(handle, 9); // SW_RESTORE
+        else ShowWindow(handle, 5); // SW_SHOW
+        return SetForegroundWindow(handle);
+    }
+
+    public static int EnableApplicationRestart(string commandLineArgs)
+    {
+        return RegisterApplicationRestart(commandLineArgs, 0);
+    }
+
+    public static void DisableApplicationRestart()
+    {
+        UnregisterApplicationRestart();
+    }
 }
 '@
-[DshApplicationIdentity]::SetCurrentProcessExplicitAppUserModelID('DeepSeek.DSH.WhaleMaidLauncher') | Out-Null
 
 $launcherRoot = $PSScriptRoot
 $stateRoot = Join-Path $env:LOCALAPPDATA 'DSH'
@@ -23,7 +170,46 @@ $statePath = Join-Path $stateRoot 'launcher.json'
 $defaultHarnessPath = Join-Path $launcherRoot 'deepseek-harness'
 $xamlPath = Join-Path $launcherRoot 'LauncherWindow.xaml'
 $updateScript = Join-Path $launcherRoot 'DSH-Launcher.ps1'
+$diagnosticsScript = Join-Path $launcherRoot 'DSH-Diagnostics.ps1'
 $serverScript = Join-Path $launcherRoot 'Start-DSH-Web.cmd'
+$appUserModelId = 'DeepSeek.DSH.WhaleMaidLauncher'
+$launcherExecutable = Join-Path $launcherRoot 'DSH.exe'
+$launcherIconPath = Join-Path $launcherRoot 'DSH-unified-v5.ico'
+$launcherRelaunchCommand = '"' + $launcherExecutable + '"'
+$launcherIconResource = $launcherIconPath + ',0'
+
+New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
+$instanceLockPath = Join-Path $stateRoot 'launcher.instance'
+try {
+    $script:instanceLockStream = [IO.File]::Open(
+        $instanceLockPath,
+        [IO.FileMode]::OpenOrCreate,
+        [IO.FileAccess]::ReadWrite,
+        [IO.FileShare]::None)
+} catch [IO.IOException] {
+    [DshApplicationIdentity]::ActivateExistingWindow() | Out-Null
+    exit 0
+}
+
+$restartArguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $PSCommandPath + '"'
+[DshApplicationIdentity]::EnableApplicationRestart($restartArguments) | Out-Null
+
+[DshApplicationIdentity]::SetCurrentProcessExplicitAppUserModelID($appUserModelId) | Out-Null
+foreach ($shortcutPath in @(
+    (Join-Path $launcherRoot 'DSH.lnk'),
+    (Join-Path ([Environment]::GetFolderPath('Programs')) 'DSH.lnk')
+)) {
+    if (Test-Path -LiteralPath $shortcutPath) {
+        try {
+            [DshApplicationIdentity]::SetShortcutIdentity(
+                $shortcutPath,
+                $appUserModelId,
+                $launcherRelaunchCommand,
+                'DSH',
+                $launcherIconResource)
+        } catch { }
+    }
+}
 
 function Test-HarnessInstallation {
     param([string]$Path)
@@ -154,6 +340,34 @@ $window = [Windows.Markup.XamlReader]::Load($reader)
 $application = New-Object Windows.Application
 $application.ShutdownMode = [Windows.ShutdownMode]::OnExplicitShutdown
 
+function Write-LauncherCrashLog {
+    param([Parameter(Mandatory)][Exception]$Exception)
+
+    try {
+        $logRoot = Join-Path $stateRoot 'logs'
+        New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+        $crashPath = Join-Path $logRoot 'launcher-crash.log'
+        if ((Test-Path -LiteralPath $crashPath) -and (Get-Item -LiteralPath $crashPath).Length -gt 2MB) {
+            $archivePath = $crashPath + '.1'
+            if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }
+            Move-Item -LiteralPath $crashPath -Destination $archivePath -Force
+        }
+        $entry = "[{0}] {1}`r`n{2}`r`n" -f (Get-Date).ToString('o'), $Exception.Message, $Exception.ToString()
+        [IO.File]::AppendAllText($crashPath, $entry, (New-Object Text.UTF8Encoding($false)))
+    } catch { }
+}
+
+$application.add_DispatcherUnhandledException({
+    param($sender, $eventArgs)
+    Write-LauncherCrashLog -Exception $eventArgs.Exception
+    [Windows.MessageBox]::Show(
+        "启动器遇到异常，已记录到：`n$stateRoot\logs\launcher-crash.log`n`n$($eventArgs.Exception.Message)",
+        'DSH 启动器异常',
+        [Windows.MessageBoxButton]::OK,
+        [Windows.MessageBoxImage]::Error) | Out-Null
+    $eventArgs.Handled = $true
+})
+
 function Get-Control {
     param([string]$Name)
     return $window.FindName($Name)
@@ -167,6 +381,7 @@ $stopButton = Get-Control 'StopButton'
 $restartButton = Get-Control 'RestartButton'
 $updateButton = Get-Control 'UpdateButton'
 $pluginManagerButton = Get-Control 'PluginManagerButton'
+$diagnosticsButton = Get-Control 'DiagnosticsButton'
 $openFolderButton = Get-Control 'OpenFolderButton'
 $terminalButton = Get-Control 'TerminalButton'
 $terminalButtonText = Get-Control 'TerminalButtonText'
@@ -356,6 +571,7 @@ function Set-LauncherBusy {
     $restartButton.IsEnabled = (Test-HarnessInstallation $repoPath) -and -not $Busy
     $updateButton.IsEnabled = -not $Busy
     $pluginManagerButton.IsEnabled = -not $Busy
+    $diagnosticsButton.IsEnabled = -not $Busy
     $openFolderButton.IsEnabled = -not $Busy
     $terminalInput.IsEnabled = -not $Busy
     $activityProgress.Visibility = if ($Busy) { 'Visible' } else { 'Collapsed' }
@@ -368,6 +584,28 @@ function Set-LauncherBusy {
     } else {
         Set-ServiceState $script:isWebRunning
     }
+}
+
+function Invoke-ExactLogRotation {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [long]$MaximumBytes = 20MB,
+        [int]$Keep = 3
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    if ((Get-Item -LiteralPath $Path).Length -le $MaximumBytes) { return }
+    for ($index = $Keep; $index -ge 1; $index--) {
+        $destination = "$Path.$index"
+        if ($index -eq $Keep -and (Test-Path -LiteralPath $destination)) {
+            Remove-Item -LiteralPath $destination -Force
+        }
+        $source = if ($index -eq 1) { $Path } else { "$Path.$($index - 1)" }
+        if (Test-Path -LiteralPath $source) {
+            Move-Item -LiteralPath $source -Destination $destination -Force
+        }
+    }
+    $script:webLogOffset = 0L
 }
 
 function Show-DshWindow {
@@ -460,6 +698,26 @@ function Start-UpdateCheck {
     } -ArgumentList 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', $updateScript, $repoPath
 }
 
+function Start-SystemDiagnostics {
+    if ($null -ne $script:activeJob) { return }
+
+    Append-TerminalLine ''
+    Append-TerminalLine '[DSH] Running full launcher, core, profile, network and disk diagnostics...'
+    $terminalPanel.Visibility = 'Visible'
+    $terminalButtonText.Text = '收起终端'
+    Set-LauncherBusy $true '正在系统诊断' '正在检查启动器、核心、插件、端口与运行环境'
+    $script:activeJobKind = 'diagnostics'
+    $script:activeJob = Start-Job -ScriptBlock {
+        param($PowerShellPath, $DiagnosticsScriptPath, $HarnessPath, $LauncherPath)
+        & $PowerShellPath -NoProfile -ExecutionPolicy Bypass -File $DiagnosticsScriptPath `
+            -HarnessPath $HarnessPath -LauncherRoot $LauncherPath 2>&1 |
+            ForEach-Object { $_.ToString() }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Diagnostics helper exited with code $LASTEXITCODE"
+        }
+    } -ArgumentList 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', $diagnosticsScript, $repoPath, $launcherRoot
+}
+
 function Start-WebUi {
     if ($null -ne $script:activeJob) { return }
     if (-not (Test-HarnessInstallation $repoPath)) {
@@ -478,6 +736,7 @@ function Start-WebUi {
         return
     }
 
+    Invoke-ExactLogRotation -Path $webLogPath
     Append-TerminalLine ''
     Append-TerminalLine '[DSH] Preparing the WebUI...'
     Set-LauncherBusy $true '正在启动 WebUI' '正在启动本地服务，页面将由官方 Harness 自动打开'
@@ -551,7 +810,7 @@ function Restart-WebUi {
     Set-LauncherBusy $true '正在重启 WebUI' '正在停止旧服务并重新启动本地 Harness'
     $script:activeJobKind = 'restart'
     $script:activeJob = Start-Job -ScriptBlock {
-        param($RepoPath, $ServerScriptPath)
+        param($RepoPath, $ServerScriptPath, $WebLogPath)
 
         # 1) Stop whatever is listening on 3080 (if anything)
         $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -571,6 +830,15 @@ function Restart-WebUi {
             "[DSH] Old WebUI stopped (PID $processId)."
         } else {
             '[DSH] WebUI was not running — starting a fresh instance.'
+        }
+
+        if ((Test-Path -LiteralPath $WebLogPath) -and (Get-Item -LiteralPath $WebLogPath).Length -gt 20MB) {
+            for ($index = 3; $index -ge 1; $index--) {
+                $destination = "$WebLogPath.$index"
+                if ($index -eq 3 -and (Test-Path -LiteralPath $destination)) { Remove-Item -LiteralPath $destination -Force }
+                $source = if ($index -eq 1) { $WebLogPath } else { "$WebLogPath.$($index - 1)" }
+                if (Test-Path -LiteralPath $source) { Move-Item -LiteralPath $source -Destination $destination -Force }
+            }
         }
 
         # 2) Start it again
@@ -594,7 +862,7 @@ function Restart-WebUi {
         }
 
         '[DSH] Harness restarted. Browser handoff is owned by the official Web runtime.'
-    } -ArgumentList $repoPath, $serverScript
+    } -ArgumentList $repoPath, $serverScript, $webLogPath
 }
 $script:pluginManagerScript = Join-Path $launcherRoot 'DSH-PluginManager.ps1'
 $script:pluginListData = @()
@@ -1175,6 +1443,10 @@ $jobTimer.Add_Tick({
                     Set-LauncherBusy $false '插件已更新' '已更新所选 Web 插件'
                     Refresh-PluginList
                 }
+                'diagnostics' {
+                    Set-ServiceState (Test-WebUiRunning)
+                    Set-LauncherBusy $false '系统诊断完成' "报告已保存到：$stateRoot\diagnostics-latest.json"
+                }
             }
         } else {
             $message = if ($null -ne $reason) { $reason.Message } else { 'The background task failed.' }
@@ -1218,6 +1490,7 @@ $minimizeButton.Add_Click({ $window.WindowState = 'Minimized' })
 $closeButton.Add_Click({ Hide-DshToTray })
 $updateButton.Add_Click({ Start-UpdateCheck })
 $pluginManagerButton.Add_Click({ Show-PluginManager })
+$diagnosticsButton.Add_Click({ Start-SystemDiagnostics })
 $openWebButton.Add_Click({ Start-WebUi })
 $stopButton.Add_Click({ Stop-WebUi })
 $restartButton.Add_Click({ Restart-WebUi })
@@ -1310,6 +1583,11 @@ $window.Add_Closed({
     $trayIcon.Visible = $false
     $trayIcon.Dispose()
     $trayMenu.Dispose()
+    [DshApplicationIdentity]::DisableApplicationRestart()
+    if ($null -ne $script:instanceLockStream) {
+        $script:instanceLockStream.Dispose()
+        $script:instanceLockStream = $null
+    }
     $application.Shutdown()
 })
 
