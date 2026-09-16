@@ -1,4 +1,4 @@
-﻿# DSH 鲸鱼娘启动器 v2
+# DSH 鲸鱼娘启动器 v2
 
 启动器已作为 `dsh-deep-whale` 项目组件分发，不依赖固定盘符或固定 Harness 路径。
 
@@ -48,3 +48,8 @@
 便携版启动器除了 Git 仓库通道，也支持签名散列保护的 ZIP 更新源。可在 `launcher-manifest.json` 的 `update.manifestSources` 中配置清单地址，或设置以分号分隔的 `DSH_LAUNCHER_UPDATE_MANIFESTS`。更新清单需要包含 `schemaVersion`、`version`、`packageUrl` 和 ZIP 的 `sha256`，可选 `packageSize` 与 `publisherThumbprints`。更新器只接受 HTTPS 或本地源，并在解压前阻止目录穿越；应用前校验散列、可选 Authenticode 发布者、文件清单及当前 Harness 兼容性。更新失败自动恢复，备份保留最近 5 份。
 
 启动器日志超过 8 MB、Web 日志超过 20 MB 时会自动轮转，避免长时间运行后日志无限增长。
+
+## 发布打包（仓库维护）
+
+- 打包：`powershell -NoProfile -ExecutionPolicy Bypass -File tools\New-LauncherRelease.ps1`。版本号取自 `launcher-manifest.json`，可用 `-Version` 覆盖；脚本写出 `artifacts\DSH-Launcher-v<版本>-win-x64.zip`，并复制一份到仓库根目录作为对外下载包。ZIP 条目固定使用正斜杠以保持与历史发布包一致，打包完成后自动核对 `launcher-manifest.json` 的 `requiredFiles`，缺项即失败并删除产物。
+- GitHub 直连开关：DSH 默认沿用本机已配置的网络路径（Git 的 `http.proxy`、`HTTP(S)_PROXY`）。仅当回环代理客户端已退出、而本机仍留有其代理配置时，才用 `set DSH_GITHUB_DIRECT=1` 启动，让 `Start-DSH-Web.cmd` 为 GitHub 主机强制直连。
