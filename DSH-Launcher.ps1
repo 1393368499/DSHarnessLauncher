@@ -11,6 +11,7 @@ if ([string]::IsNullOrWhiteSpace($HarnessPath)) {
 $HarnessPath = [System.IO.Path]::GetFullPath($HarnessPath)
 $repoUrl = 'https://github.com/deepseek-ai/deepseek-harness.git'
 $serverScript = Join-Path $launcherRoot 'Start-DSH-Web.cmd'
+$coreCompatibilityScript = Join-Path $launcherRoot 'DSH-CoreCompatibility.ps1'
 $pluginUpdaterScript = Join-Path $launcherRoot 'DSH-PluginUpdater.ps1'
 $pluginCompatibilityScript = Join-Path $launcherRoot 'DSH-PluginCompatibility.ps1'
 $launcherLogRoot = Join-Path $env:LOCALAPPDATA 'DSH\logs'
@@ -22,6 +23,7 @@ $buildEnvironmentBefore = @{}
 $serviceWasRunning = $false
 $serviceStoppedForUpdate = $false
 $coreRolledBack = $false
+$coreCompatibilityNeedsRestore = $false
 $updateWarnings = New-Object System.Collections.ArrayList
 $updateResult = [ordered]@{
     schemaVersion = 1
@@ -187,6 +189,32 @@ function Invoke-CheckedCommand {
     }
 }
 
+function Invoke-CoreCompatibility {
+    param([Parameter(Mandatory)][ValidateSet('Apply', 'Remove', 'Status')][string]$Action)
+
+    if (-not (Test-Path -LiteralPath $script:coreCompatibilityScript)) {
+        throw "Core compatibility helper was not found: $script:coreCompatibilityScript"
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = @(& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+            -NoProfile -ExecutionPolicy Bypass -File $script:coreCompatibilityScript `
+            -HarnessPath $script:HarnessPath -Action $Action 2>&1 | ForEach-Object { ConvertTo-CommandOutputLine $_ })
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    foreach ($line in $output) {
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            Write-Host $line
+            Add-Content -LiteralPath $script:launcherLog -Value $line -Encoding UTF8
+        }
+    }
+    if ($exitCode -ne 0) { throw "Core compatibility action '$Action' failed (exit code: $exitCode)." }
+    return @($output)
+}
+
 function Get-FileSha256 {
     param([Parameter(Mandatory)][string]$Path)
 
@@ -323,6 +351,11 @@ try {
                 Write-LauncherStatus 'Harness is already up to date.' Green
                 $updateResult.coreStatus = 'current'
             } else {
+                # The scheduler compatibility edit is intentionally tracked as a local diff.
+                # Remove only that verified edit so upstream can fast-forward cleanly; unrelated
+                # user changes remain protected by the normal dirty-worktree check below.
+                [void](Invoke-CoreCompatibility -Action Remove)
+                $coreCompatibilityNeedsRestore = $true
                 $trackedChanges = @(& $gitPath -C $HarnessPath status --porcelain --untracked-files=no)
                 & $gitPath -C $HarnessPath merge-base --is-ancestor HEAD $remoteRef
                 $canFastForward = $LASTEXITCODE -eq 0
@@ -346,6 +379,13 @@ try {
             }
         }
     }
+
+    $coreCompatibilityStatus = @(Invoke-CoreCompatibility -Action Status)
+    if (($coreCompatibilityStatus -join "`n") -match '\[VULNERABLE\]') {
+        Stop-WebServiceForCoreUpdate
+    }
+    [void](Invoke-CoreCompatibility -Action Apply)
+    $coreCompatibilityNeedsRestore = $false
 
     $lockHashAfter = if (Test-Path -LiteralPath $lockFile) {
         Get-FileSha256 -Path $lockFile
@@ -413,6 +453,8 @@ try {
             Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('run', 'clean') -FailureMessage 'Failed to clean artifacts while restoring the previous Harness core'
             Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('run', 'build') -FailureMessage 'Failed to rebuild the previous Harness core'
             Set-Content -LiteralPath $buildCommitMarker -Value $localBefore -Encoding UTF8
+            [void](Invoke-CoreCompatibility -Action Apply)
+            $coreCompatibilityNeedsRestore = $false
             $updated = $false
             $coreRolledBack = $true
             $updateResult.coreStatus = 'rolled-back'
@@ -563,6 +605,14 @@ try {
         Write-LauncherStatus "The start command was submitted. Open http://127.0.0.1:3080/ after initialization. Log: $webLog" Yellow
     }
 } catch {
+    if ($coreCompatibilityNeedsRestore) {
+        try {
+            [void](Invoke-CoreCompatibility -Action Apply)
+            $coreCompatibilityNeedsRestore = $false
+        } catch {
+            [void]$updateWarnings.Add("The managed core compatibility patch could not be restored: $($_.Exception.Message)")
+        }
+    }
     $updateResult.status = 'failed'
     $updateResult.finishedAt = (Get-Date).ToString('o')
     try {
@@ -580,6 +630,9 @@ try {
     }
     exit 1
 } finally {
+    if ($coreCompatibilityNeedsRestore) {
+        try { [void](Invoke-CoreCompatibility -Action Apply) } catch { }
+    }
     foreach ($name in $buildEnvironmentBefore.Keys) {
         [Environment]::SetEnvironmentVariable($name, $buildEnvironmentBefore[$name], 'Process')
     }

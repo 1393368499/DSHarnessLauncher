@@ -17,5 +17,6 @@ if defined NO_PROXY (
     set "NO_PROXY=github.com,api.github.com,raw.githubusercontent.com,codeload.github.com,objects.githubusercontent.com"
 )
 :launch
-rem Harness owns the official browser handoff. The launcher only starts the runtime.
-call pnpm.cmd dsh web >> "%DSH_REPO%\dsh-web.log" 2>&1
+rem Browser handoff is owned by the launcher. Keeping it out of the hidden server
+rem process avoids Windows console/browser activation failures during restarts.
+call pnpm.cmd dsh web --no-open >> "%DSH_REPO%\dsh-web.log" 2>&1

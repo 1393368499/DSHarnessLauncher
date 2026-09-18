@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "2.0.1",
+  "version": "2.0.2",
   "core": {
     "packageName": "@deepseek-ai/dsh-root",
     "minimumVersion": "0.1.2-alpha.2",
@@ -10,6 +10,7 @@
   "launcher": {
     "requiredFiles": [
       "DSH-Launcher.ps1",
+      "DSH-CoreCompatibility.ps1",
       "DSH-LauncherCompatibility.ps1",
       "DSH-LauncherUpdater.ps1",
       "DSH-PluginManager.ps1",

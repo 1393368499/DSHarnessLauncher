@@ -106,7 +106,14 @@ try {
                 Add-DiagnosticCheck 'Harness' '官方来源' 'WARN' "当前 origin：$origin"
             }
             $trackedChanges = @(& $git.Source -C $HarnessPath status --porcelain --untracked-files=no 2>$null)
-            if ($trackedChanges.Count -gt 0) {
+            $managedCoreTarget = 'packages/core/tools/src/index.ts'
+            $managedCoreState = Join-Path $HarnessPath '.git\dsh-launcher-core-compatibility.json'
+            $onlyManagedCorePatch = $trackedChanges.Count -eq 1 -and
+                ($trackedChanges[0].Substring(3) -replace '\\', '/') -eq $managedCoreTarget -and
+                (Test-Path -LiteralPath $managedCoreState)
+            if ($onlyManagedCorePatch) {
+                Add-DiagnosticCheck 'Harness' '工作区' 'OK' '仅有启动器托管的核心兼容补丁；更新前会自动撤销，更新后自动重打'
+            } elseif ($trackedChanges.Count -gt 0) {
                 Add-DiagnosticCheck 'Harness' '工作区' 'WARN' "$($trackedChanges.Count) 项已跟踪修改会阻止自动更新"
             } else {
                 Add-DiagnosticCheck 'Harness' '工作区' 'OK' '已跟踪文件干净，可安全快进更新'
@@ -124,6 +131,22 @@ try {
             Add-DiagnosticCheck 'Harness' '核心版本' 'OK' ([string]$core.version)
         } catch {
             Add-DiagnosticCheck 'Harness' '核心清单' 'FAIL' $_.Exception.Message
+        }
+        $coreCompatibility = Join-Path $LauncherRoot 'DSH-CoreCompatibility.ps1'
+        if (Test-Path -LiteralPath $coreCompatibility) {
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $compatibilityOutput = @(& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File $coreCompatibility -HarnessPath $HarnessPath -Action Status 2>&1 | ForEach-Object { $_.ToString() })
+                $compatibilityExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previous
+            }
+            if ($compatibilityExitCode -eq 0) {
+                Add-DiagnosticCheck 'Harness' '工具调度器兼容性' 'OK' ($compatibilityOutput -join ' ')
+            } else {
+                Add-DiagnosticCheck 'Harness' '工具调度器兼容性' 'FAIL' ($compatibilityOutput -join ' ')
+            }
         }
     }
 

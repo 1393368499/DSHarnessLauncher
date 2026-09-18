@@ -65,6 +65,7 @@ if ([string]$manifest.version -ne $Version) {
 $payload = @(
     'DSH.exe'
     'DSH-Launcher.ps1'
+    'DSH-CoreCompatibility.ps1'
     'DSH-LauncherCompatibility.ps1'
     'DSH-LauncherUpdater.ps1'
     'DSH-Diagnostics.ps1'

@@ -13,6 +13,7 @@
 
 - 启动器采用单实例运行；重复点击 `DSH.exe` 会激活已有窗口，不再重复创建托盘图标或后台进程。Windows 异常退出后可通过应用重启机制恢复。
 - “检查更新”按顺序完成：先更新 Harness 核心、重新构建，再校验启动器和新核心的兼容性；只有启动器自身是带远端的干净 Git 工作区时，才会安全地快进更新启动器。便携版会跳过启动器自更新，但仍会记录兼容性结果。
+- 当前核心的工具调度器在同一模块经不同软链接路径重复加载时可能产生不同的 `unique symbol`，导致所有 Pwsh/SSH 工具报 `prepare` 未定义。启动器会应用一项可逆的 `Symbol.for(...)` 兼容补丁；检查核心更新前只撤销这项受管修改，更新后重新检测。官方核心包含等价修复后会自动停止打补丁。
 - “检查更新”还会读取 Web profile 中已启用的第三方插件，通过禁用系统代理的 GitHub REST API 直连检查 Release、Tag 或默认分支提交，并通过 Harness 插件管理命令应用可用更新；本地 `file:`/`link:` 插件和显式锁定 Git ref 的插件不会被改动。
 - 插件更新通道默认为自动：稳定版 Harness 只跟踪稳定版；alpha/beta/rc Harness 会同时检查稳定版和预发布版，读取候选插件的 `peerDependencies`，只安装与当前核心兼容的最高版本。安装时使用明确版本号，因此不会受 npm `latest` 标签限制。
 - 同一个 GitHub 仓库提供的多个插件会合并成一次更新；配置的 npm 镜像不可用时自动切换到官方 npm 源。插件更新前后的启用/停用列表会原样保留，避免 Harness 更新命令意外停用插件。
@@ -30,6 +31,7 @@
 - 无控制台入口：`DSH.exe`
 - 界面脚本：`DSH-UI.ps1`
 - 安装与更新脚本：`DSH-Launcher.ps1`
+- 核心兼容补丁管理：`DSH-CoreCompatibility.ps1`
 - 插件管理后端：`DSH-PluginManager.ps1`
 - 启动器兼容性记录：`%LOCALAPPDATA%\DSH\launcher-core-compatibility.json`
 - 位置记录：`%LOCALAPPDATA%\DSH\launcher.json`

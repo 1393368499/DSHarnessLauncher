@@ -13,6 +13,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$script:npmPublishedVersions = @{}
 
 function Write-PluginStatus {
     param(
@@ -449,6 +450,32 @@ function Get-GitHubManifestAtTag {
     return Get-GitHubJson "/repos/$encodedRepo/contents/$encodedManifestPath`?ref=$encodedTag" 'application/vnd.github.raw+json'
 }
 
+function Test-NpmVersionPublished {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Version
+    )
+
+    if (-not $script:npmPublishedVersions.ContainsKey($Name)) {
+        try {
+            $encodedName = [Uri]::EscapeDataString($Name)
+            $packument = Invoke-RestMethod -UseBasicParsing -Uri "https://registry.npmjs.org/$encodedName" -TimeoutSec 20
+            $versions = @{}
+            if ($null -ne $packument.versions) {
+                foreach ($property in $packument.versions.PSObject.Properties) {
+                    $versions[[string]$property.Name] = $true
+                }
+            }
+            $script:npmPublishedVersions[$Name] = $versions
+        } catch {
+            # Registry reachability must not block GitHub update discovery. Returning
+            # null preserves the previous install-time fallback for transient outages.
+            return $null
+        }
+    }
+    return $script:npmPublishedVersions[$Name].ContainsKey($Version)
+}
+
 function Get-LatestGitHubVersion {
     param(
         [Parameter(Mandatory)]$Plugin,
@@ -493,6 +520,10 @@ function Get-LatestGitHubVersion {
             $manifestVersion = ConvertTo-SemVer ([string]$remoteManifest.version)
             if ($null -eq $manifestVersion -or (Compare-SemVer $manifestVersion $candidate.Version) -ne 0) { continue }
             if (-not (Test-PluginCoreCompatibility $remoteManifest)) { continue }
+            if ((Compare-SemVer $manifestVersion $InstalledVersion) -gt 0) {
+                $published = Test-NpmVersionPublished -Name $Plugin.Name -Version $manifestVersion.Text
+                if ($published -eq $false) { continue }
+            }
             if ($null -eq $best -or (Compare-SemVer $manifestVersion $best.Version) -gt 0) {
                 $best = [pscustomobject]@{
                     Version = $manifestVersion
@@ -707,6 +738,7 @@ try {
             [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
             if (-not [string]::IsNullOrWhiteSpace($Registry)) {
                 [Environment]::SetEnvironmentVariable('npm_config_registry', $Registry, 'Process')
+                $arguments += "--registry=$Registry"
             }
             # pnpm resolves github: shorthand refs through git+ssh by default. This
             # process-scoped Git config keeps public plugin updates on

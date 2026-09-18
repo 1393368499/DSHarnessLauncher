@@ -739,7 +739,7 @@ function Start-WebUi {
     Invoke-ExactLogRotation -Path $webLogPath
     Append-TerminalLine ''
     Append-TerminalLine '[DSH] Preparing the WebUI...'
-    Set-LauncherBusy $true '正在启动 WebUI' '正在启动本地服务，页面将由官方 Harness 自动打开'
+    Set-LauncherBusy $true '正在启动 WebUI' '正在启动本地服务，准备就绪后将打开浏览器'
     $script:activeJobKind = 'web'
     $script:activeJob = Start-Job -ScriptBlock {
         param($RepoPath, $ServerScriptPath)
@@ -768,7 +768,7 @@ function Start-WebUi {
             throw "WebUI did not become ready on port 3080. Check $RepoPath\dsh-web.log."
         }
 
-        '[DSH] Harness is ready. Browser handoff is owned by the official Web runtime.'
+        '[DSH] Harness is ready. The launcher will open the browser.'
     } -ArgumentList $repoPath, $serverScript
 }
 
@@ -861,7 +861,7 @@ function Restart-WebUi {
             throw "WebUI did not become ready on port 3080. Check $RepoPath\dsh-web.log."
         }
 
-        '[DSH] Harness restarted. Browser handoff is owned by the official Web runtime.'
+        '[DSH] Harness restarted.'
     } -ArgumentList $repoPath, $serverScript, $webLogPath
 }
 $script:pluginManagerScript = Join-Path $launcherRoot 'DSH-PluginManager.ps1'
@@ -1420,6 +1420,9 @@ $jobTimer.Add_Tick({
                 'web' {
                     Set-ServiceState $true
                     Set-LauncherBusy $false '服务运行中' 'WebUI 已在本地端口 3080 启动'
+                    try { Start-Process $webAddress | Out-Null } catch {
+                        Append-TerminalLine ("[WARN] Unable to open the browser: " + $_.Exception.Message)
+                    }
                 }
                 'stop' {
                     Set-ServiceState $false
