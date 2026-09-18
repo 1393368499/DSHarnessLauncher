@@ -44,6 +44,19 @@ function Get-CommandVersion {
     }
 }
 
+function Get-FileSha256 {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '')
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
 
 try {
@@ -119,11 +132,15 @@ try {
                 Add-DiagnosticCheck 'Harness' '工作区' 'OK' '已跟踪文件干净，可安全快进更新'
             }
             $buildMarker = Join-Path $HarnessPath '.git\dsh-launcher-build-commit'
-            $builtCommit = if (Test-Path -LiteralPath $buildMarker) { (Get-Content -LiteralPath $buildMarker -Raw -Encoding UTF8).Trim() } else { '' }
-            if ($builtCommit -eq $commit -and (Test-Path -LiteralPath (Join-Path $HarnessPath 'apps\cli\lib\bin.js'))) {
-                Add-DiagnosticCheck 'Harness' '构建状态' 'OK' "构建与提交 $($commit.Substring(0, 8)) 一致"
+            $builtIdentity = if (Test-Path -LiteralPath $buildMarker) { (Get-Content -LiteralPath $buildMarker -Raw -Encoding UTF8).Trim() } else { '' }
+            $compatibilityTarget = Join-Path $HarnessPath ($managedCoreTarget -replace '/', '\')
+            $currentBuildIdentity = if (Test-Path -LiteralPath $compatibilityTarget) {
+                "$commit|$(Get-FileSha256 -Path $compatibilityTarget)"
+            } else { '' }
+            if ($builtIdentity -eq $currentBuildIdentity -and (Test-Path -LiteralPath (Join-Path $HarnessPath 'apps\cli\lib\bin.js'))) {
+                Add-DiagnosticCheck 'Harness' '构建状态' 'OK' "构建与提交 $($commit.Substring(0, 8)) 及兼容补丁一致"
             } else {
-                Add-DiagnosticCheck 'Harness' '构建状态' 'WARN' '构建标记缺失或与当前提交不一致；运行检查更新可自动修复'
+                Add-DiagnosticCheck 'Harness' '构建状态' 'WARN' '构建标记缺失，或与当前提交及兼容补丁不一致；运行检查更新可自动修复'
             }
         }
         try {

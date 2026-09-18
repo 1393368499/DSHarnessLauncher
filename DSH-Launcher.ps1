@@ -229,6 +229,16 @@ function Get-FileSha256 {
     }
 }
 
+function Get-HarnessBuildIdentity {
+    param([Parameter(Mandatory)][string]$Commit)
+
+    $compatibilityTarget = Join-Path $script:HarnessPath 'packages\core\tools\src\index.ts'
+    if (-not (Test-Path -LiteralPath $compatibilityTarget)) {
+        throw "Harness compatibility target was not found: $compatibilityTarget"
+    }
+    return "$Commit|$(Get-FileSha256 -Path $compatibilityTarget)"
+}
+
 function Initialize-NativeBuildEnvironment {
     # node-gyp can miss a separately installed SDK when VS component metadata
     # is incomplete. Supply only verified developer-shell discovery variables.
@@ -421,12 +431,14 @@ try {
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($currentCommit)) {
             throw 'Failed to resolve the current Harness commit before building.'
         }
-        $builtCommit = if (Test-Path -LiteralPath $buildCommitMarker) {
+        $builtIdentity = if (Test-Path -LiteralPath $buildCommitMarker) {
             (Get-Content -LiteralPath $buildCommitMarker -Raw -Encoding UTF8).Trim()
         } else { '' }
-        $buildStateMissingOrStale = $builtCommit -ne $currentCommit
+        $currentBuildIdentity = Get-HarnessBuildIdentity -Commit $currentCommit
+        $buildStateMissingOrStale = $builtIdentity -ne $currentBuildIdentity
 
         if ($freshInstall -or $updated -or $buildStateMissingOrStale -or -not (Test-Path -LiteralPath $cliArtifact)) {
+            Stop-WebServiceForCoreUpdate
             if ($buildStateMissingOrStale -and -not $freshInstall -and -not $updated) {
                 Write-LauncherStatus 'The previous update did not complete its build. Recovering the Harness artifacts...' Yellow
             }
@@ -434,7 +446,7 @@ try {
             Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('run', 'clean') -FailureMessage 'Failed to clean stale Harness build artifacts'
             Write-LauncherStatus 'Building the complete Harness runtime and WebUI...' Cyan
             Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('run', 'build') -FailureMessage 'Failed to build Harness'
-            Set-Content -LiteralPath $buildCommitMarker -Value $currentCommit -Encoding UTF8
+            Set-Content -LiteralPath $buildCommitMarker -Value $currentBuildIdentity -Encoding UTF8
             Write-LauncherStatus 'Harness build completed.' Green
         }
         if ($updated) { $updateResult.coreStatus = 'updated' }
@@ -450,11 +462,12 @@ try {
             $restoredDependencyIdentity = "$restoredLockHash|$nodeIdentity"
             Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('install', '--frozen-lockfile') -FailureMessage 'Failed to restore the previous Harness dependencies'
             Set-Content -LiteralPath $dependencyMarker -Value $restoredDependencyIdentity -Encoding UTF8
-            Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('run', 'clean') -FailureMessage 'Failed to clean artifacts while restoring the previous Harness core'
-            Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('run', 'build') -FailureMessage 'Failed to rebuild the previous Harness core'
-            Set-Content -LiteralPath $buildCommitMarker -Value $localBefore -Encoding UTF8
             [void](Invoke-CoreCompatibility -Action Apply)
             $coreCompatibilityNeedsRestore = $false
+            $restoredBuildIdentity = Get-HarnessBuildIdentity -Commit $localBefore
+            Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('run', 'clean') -FailureMessage 'Failed to clean artifacts while restoring the previous Harness core'
+            Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('run', 'build') -FailureMessage 'Failed to rebuild the previous Harness core'
+            Set-Content -LiteralPath $buildCommitMarker -Value $restoredBuildIdentity -Encoding UTF8
             $updated = $false
             $coreRolledBack = $true
             $updateResult.coreStatus = 'rolled-back'
