@@ -169,6 +169,7 @@ $stateRoot = Join-Path $env:LOCALAPPDATA 'DSH'
 $statePath = Join-Path $stateRoot 'launcher.json'
 $defaultHarnessPath = Join-Path $launcherRoot 'deepseek-harness'
 $xamlPath = Join-Path $launcherRoot 'LauncherWindow.xaml'
+$launcherManifestPath = Join-Path $launcherRoot 'launcher-manifest.json'
 $updateScript = Join-Path $launcherRoot 'DSH-Launcher.ps1'
 $diagnosticsScript = Join-Path $launcherRoot 'DSH-Diagnostics.ps1'
 $serverScript = Join-Path $launcherRoot 'Start-DSH-Web.cmd'
@@ -177,6 +178,16 @@ $launcherExecutable = Join-Path $launcherRoot 'DSH.exe'
 $launcherIconPath = Join-Path $launcherRoot 'DSH-unified-v5.ico'
 $launcherRelaunchCommand = '"' + $launcherExecutable + '"'
 $launcherIconResource = $launcherIconPath + ',0'
+$launcherVersion = 'unknown'
+if (Test-Path -LiteralPath $launcherManifestPath) {
+    try {
+        $launcherManifest = Get-Content -LiteralPath $launcherManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not [string]::IsNullOrWhiteSpace([string]$launcherManifest.version)) {
+            $launcherVersion = [string]$launcherManifest.version
+        }
+    } catch { }
+}
+$launcherVersionLabel = if ($launcherVersion -eq 'unknown') { 'v—' } else { "v$launcherVersion" }
 
 New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
 $instanceLockPath = Join-Path $stateRoot 'launcher.instance'
@@ -197,6 +208,7 @@ $restartArguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass 
 [DshApplicationIdentity]::SetCurrentProcessExplicitAppUserModelID($appUserModelId) | Out-Null
 foreach ($shortcutPath in @(
     (Join-Path $launcherRoot 'DSH.lnk'),
+    (Join-Path ([Environment]::GetFolderPath('Desktop')) 'DSH.lnk'),
     (Join-Path ([Environment]::GetFolderPath('Programs')) 'DSH.lnk')
 )) {
     if (Test-Path -LiteralPath $shortcutPath) {
@@ -400,6 +412,11 @@ $commitLabel = Get-Control 'CommitLabel'
 $harnessPathLabel = Get-Control 'HarnessPathLabel'
 $brandIcon = Get-Control 'BrandIcon'
 $maidImage = Get-Control 'MaidImage'
+$headerVersionLabel = Get-Control 'HeaderVersionLabel'
+$launcherVersionText = Get-Control 'LauncherVersionLabel'
+
+if ($null -ne $headerVersionLabel) { $headerVersionLabel.Text = $launcherVersionLabel }
+if ($null -ne $launcherVersionText) { $launcherVersionText.Text = $launcherVersionLabel }
 
 $iconPath = Join-Path $launcherRoot 'DSH-unified-v5.ico'
 if (Test-Path -LiteralPath $iconPath) {
@@ -434,7 +451,7 @@ $webAddress = 'http://127.0.0.1:3080/'
 
 $trayIcon = New-Object System.Windows.Forms.NotifyIcon
 $trayIcon.Icon = New-Object System.Drawing.Icon -ArgumentList (Join-Path $launcherRoot 'DSH-unified-v5.ico')
-$trayIcon.Text = 'DSH - DeepSeek Harness'
+$trayIcon.Text = "DSH $launcherVersionLabel - DeepSeek Harness"
 $trayIcon.Visible = $true
 
 $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip

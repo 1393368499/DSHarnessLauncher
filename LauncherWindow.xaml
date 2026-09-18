@@ -208,7 +208,14 @@
                                 <Image x:Name="BrandIcon" Width="38" Height="38" Stretch="Uniform"
                                        RenderOptions.BitmapScalingMode="HighQuality" Visibility="Collapsed" />
                                 <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
-                                    <TextBlock Text="DSH" Foreground="{StaticResource TextPrimary}" FontSize="14" FontWeight="Bold" />
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="DSH" Foreground="{StaticResource TextPrimary}" FontSize="14" FontWeight="Bold" />
+                                        <Border Margin="7,0,0,0" Padding="6,1" CornerRadius="7" Background="{StaticResource AccentSoft}"
+                                                VerticalAlignment="Center">
+                                            <TextBlock x:Name="HeaderVersionLabel" Text="v—" Foreground="{StaticResource Accent}"
+                                                       FontSize="9.5" FontWeight="SemiBold" />
+                                        </Border>
+                                    </StackPanel>
                                     <TextBlock Text="DeepSeek Harness Launcher" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,1,0,0" />
                                 </StackPanel>
                             </StackPanel>
@@ -412,7 +419,8 @@
                                 </Grid>
                                 <Grid Grid.Row="3" Margin="0,10,0,0">
                                     <TextBlock Text="启动器版本" Foreground="{StaticResource TextMuted}" FontSize="11" />
-                                    <TextBlock Text="v2.0.0" Foreground="{StaticResource TextPrimary}" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Right" />
+                                    <TextBlock x:Name="LauncherVersionLabel" Text="v—" Foreground="{StaticResource TextPrimary}"
+                                               FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Right" />
                                 </Grid>
                             </Grid>
                         </Border>
