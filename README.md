@@ -23,7 +23,7 @@
 - 点击“插件管理”可查看 Web profile 的插件、启用或停用入口，以及更新单个插件。更新后启动器会自动应用已知的核心 API 兼容迁移；离线停用会在 `%USERPROFILE%\\.dsh\\profiles\\web\\backups` 留下可恢复副本。
 - 点击“系统诊断”可一次检查启动器文件与语法、Git/Node.js/pnpm、官方核心来源与构建状态、Web profile 插件、服务端口和磁盘空间；结构化报告写入 `%LOCALAPPDATA%\DSH\diagnostics-latest.json`。
 - GitHub 查询结果缓存 15 分钟；公共仓库可匿名检查，也可通过当前进程或 Windows 用户级的 `GH_TOKEN`、`GITHUB_TOKEN` 环境变量提高 API 限额。
-- “打开 WebUI”使用保存的 Harness 路径启动服务，并通过系统默认浏览器打开。
+- “打开 WebUI”使用保存的 Harness 路径启动服务，并等待 Harness 打印出带 token 的地址后再用它打开系统默认浏览器；token 从启动日志解析，避免落在需要手动刷新的未授权页面。
 - “打开终端”在保存的 Harness 目录中执行命令。
 - 点击关闭按钮后隐藏到托盘；托盘菜单中的“彻底退出”才会结束启动器。
 

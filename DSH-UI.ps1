@@ -533,6 +533,36 @@ function Read-WebLogDelta {
     }
 }
 
+function Get-WebUiUrl {
+    # The Harness CLI prints the tokenized handoff URL once the Loader tree is
+    # ready to serve the browser, and that token is what the WebUI exchanges for
+    # its session cookie. The canonical address alone lands on a page the user
+    # has to refresh, so prefer the last URL the current server logged.
+    if (-not (Test-Path -LiteralPath $webLogPath)) { return $webAddress }
+
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [IO.File]::Open(
+            $webLogPath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+        $reader = New-Object IO.StreamReader($stream, (New-Object Text.UTF8Encoding($false)), $true)
+        $matches = [regex]::Matches($reader.ReadToEnd(), 'dsh web:\s+(http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+)')
+        if ($matches.Count -gt 0) {
+            return $matches[$matches.Count - 1].Groups[1].Value
+        }
+    } catch {
+        # A rotated or unreadable log only costs the tokenized handoff.
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+
+    return $webAddress
+}
+
 function Test-WebUiRunning {
     # Fast bounded socket probe: Get-NetTCPConnection is slow (hundreds of ms) and blocks the UI thread.
     $client = New-Object System.Net.Sockets.TcpClient
@@ -747,7 +777,7 @@ function Start-WebUi {
     if (Test-WebUiRunning) {
         Set-ServiceState $true
         Set-LauncherBusy $false '服务运行中' '已在系统默认浏览器中打开 WebUI'
-        try { Start-Process $webAddress | Out-Null } catch {
+        try { Start-Process (Get-WebUiUrl) | Out-Null } catch {
             Append-TerminalLine ("[WARN] Unable to open the browser: " + $_.Exception.Message)
         }
         return
@@ -759,10 +789,11 @@ function Start-WebUi {
     Set-LauncherBusy $true '正在启动 WebUI' '正在启动本地服务，准备就绪后将打开浏览器'
     $script:activeJobKind = 'web'
     $script:activeJob = Start-Job -ScriptBlock {
-        param($RepoPath, $ServerScriptPath)
+        param($RepoPath, $ServerScriptPath, $WebLogPath)
 
         $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -eq $listener) {
+        $wasRunning = $null -ne $listener
+        if (-not $wasRunning) {
             '[DSH] Starting pnpm dsh web in the background...'
             Start-Process -FilePath $env:ComSpec `
                 -ArgumentList @('/d', '/s', '/c', ('""{0}" "{1}""' -f $ServerScriptPath, $RepoPath)) `
@@ -785,8 +816,44 @@ function Start-WebUi {
             throw "WebUI did not become ready on port 3080. Check $RepoPath\dsh-web.log."
         }
 
-        '[DSH] Harness is ready. The launcher will open the browser.'
-    } -ArgumentList $repoPath, $serverScript
+        # The listening port appears before the Loader tree settles, and the CLI
+        # logs the tokenized handoff URL only once the host can serve the
+        # browser. Opening the canonical address inside that window is what
+        # forces a manual refresh, so wait for the logged URL.
+        $handoffLogged = $false
+        $handoffAttempts = if ($wasRunning) { 1 } else { 60 }
+        $handoffPattern = 'dsh web:\s+http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+'
+        for ($attempt = 0; $attempt -lt $handoffAttempts; $attempt++) {
+            $logTail = ''
+            if (Test-Path -LiteralPath $WebLogPath) {
+                $logStream = $null
+                $logReader = $null
+                try {
+                    $logStream = [IO.File]::Open($WebLogPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+                    $logReader = New-Object IO.StreamReader($logStream, (New-Object Text.UTF8Encoding($false)), $true)
+                    $logText = $logReader.ReadToEnd()
+                    $logTail = if ($logText.Length -gt 65536) { $logText.Substring($logText.Length - 65536) } else { $logText }
+                } catch {
+                    $logTail = ''
+                } finally {
+                    if ($null -ne $logReader) { $logReader.Dispose() }
+                    if ($null -ne $logStream) { $logStream.Dispose() }
+                }
+            }
+            if ($logTail -match $handoffPattern) { $handoffLogged = $true; break }
+            if ($attempt + 1 -ge $handoffAttempts) { break }
+            Start-Sleep -Seconds 1
+            if (($attempt + 1) % 5 -eq 0) {
+                "[DSH] Waiting for the WebUI handoff URL... $($attempt + 1)s"
+            }
+        }
+
+        if ($handoffLogged) {
+            '[DSH] Harness is ready. The launcher will open the browser.'
+        } else {
+            '[DSH] The WebUI port is open but the handoff URL is not in the log yet. Opening the canonical address.'
+        }
+    } -ArgumentList $repoPath, $serverScript, $webLogPath
 }
 
 function Stop-WebUi {
@@ -1437,7 +1504,7 @@ $jobTimer.Add_Tick({
                 'web' {
                     Set-ServiceState $true
                     Set-LauncherBusy $false '服务运行中' 'WebUI 已在本地端口 3080 启动'
-                    try { Start-Process $webAddress | Out-Null } catch {
+                    try { Start-Process (Get-WebUiUrl) | Out-Null } catch {
                         Append-TerminalLine ("[WARN] Unable to open the browser: " + $_.Exception.Message)
                     }
                 }
