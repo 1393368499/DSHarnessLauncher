@@ -164,6 +164,25 @@ public static class DshApplicationIdentity
 }
 '@
 
+# Start-Job launches a new powershell.exe and blocks the dispatcher while that
+# process is being prepared. Keep a small in-process runspace pool alive and
+# use the generic BeginInvoke overload through this bridge instead.
+Add-Type -ReferencedAssemblies ([System.Management.Automation.PSObject].Assembly.Location) -TypeDefinition @'
+using System;
+using System.Management.Automation;
+
+public static class DshAsyncPowerShell
+{
+    public static IAsyncResult Begin(
+        PowerShell shell,
+        PSDataCollection<PSObject> input,
+        PSDataCollection<PSObject> output)
+    {
+        return shell.BeginInvoke<PSObject, PSObject>(input, output);
+    }
+}
+'@
+
 $launcherRoot = $PSScriptRoot
 $stateRoot = Join-Path $env:LOCALAPPDATA 'DSH'
 $statePath = Join-Path $stateRoot 'launcher.json'
@@ -201,6 +220,11 @@ try {
     [DshApplicationIdentity]::ActivateExistingWindow() | Out-Null
     exit 0
 }
+
+$script:backgroundRunspacePool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, 2)
+$script:backgroundRunspacePool.ApartmentState = [Threading.ApartmentState]::MTA
+$script:backgroundRunspacePool.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+$script:backgroundRunspacePool.Open()
 
 $restartArguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $PSCommandPath + '"'
 [DshApplicationIdentity]::EnableApplicationRestart($restartArguments) | Out-Null
@@ -415,6 +439,23 @@ $maidImage = Get-Control 'MaidImage'
 $headerVersionLabel = Get-Control 'HeaderVersionLabel'
 $launcherVersionText = Get-Control 'LauncherVersionLabel'
 
+function New-OptimizedBitmapImage {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [int]$DecodePixelWidth = 0
+    )
+
+    $bitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+    $bitmap.BeginInit()
+    $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+    $bitmap.CreateOptions = [System.Windows.Media.Imaging.BitmapCreateOptions]::IgnoreImageCache
+    if ($DecodePixelWidth -gt 0) { $bitmap.DecodePixelWidth = $DecodePixelWidth }
+    $bitmap.UriSource = [Uri]$Path
+    $bitmap.EndInit()
+    $bitmap.Freeze()
+    return $bitmap
+}
+
 if ($null -ne $headerVersionLabel) { $headerVersionLabel.Text = $launcherVersionLabel }
 if ($null -ne $launcherVersionText) { $launcherVersionText.Text = $launcherVersionLabel }
 
@@ -427,14 +468,14 @@ $maidImagePath = Join-Path $launcherRoot 'assets\DSH-white-frame-v5.png'
 $brandIconPath = Join-Path $launcherRoot 'assets\DSHarness-v2.png'
 if (Test-Path -LiteralPath $brandIconPath) {
     try {
-        $brandIcon.Source = New-Object System.Windows.Media.Imaging.BitmapImage -ArgumentList ([Uri]$brandIconPath)
+        $brandIcon.Source = New-OptimizedBitmapImage -Path $brandIconPath -DecodePixelWidth 96
         $brandIcon.Visibility = 'Visible'
     } catch { }
 }
 
 if (Test-Path -LiteralPath $maidImagePath) {
     try {
-        $maidImage.Source = New-Object System.Windows.Media.Imaging.BitmapImage -ArgumentList ([Uri]$maidImagePath)
+        $maidImage.Source = New-OptimizedBitmapImage -Path $maidImagePath -DecodePixelWidth 510
         $maidImage.Visibility = 'Visible'
     } catch { }
 }
@@ -466,14 +507,105 @@ $exitTrayItem = New-Object System.Windows.Forms.ToolStripMenuItem('彻底退出'
 [void]$trayMenu.Items.Add($exitTrayItem)
 $trayIcon.ContextMenuStrip = $trayMenu
 
+function Start-BackgroundOperation {
+    param(
+        [Parameter(Mandatory)][scriptblock]$ScriptBlock,
+        [object[]]$ArgumentList = @()
+    )
+
+    $shell = [System.Management.Automation.PowerShell]::Create()
+    $inputBuffer = New-Object 'System.Management.Automation.PSDataCollection[System.Management.Automation.PSObject]'
+    $outputBuffer = New-Object 'System.Management.Automation.PSDataCollection[System.Management.Automation.PSObject]'
+    try {
+        $shell.RunspacePool = $script:backgroundRunspacePool
+        [void]$shell.AddScript($ScriptBlock.ToString())
+        foreach ($argument in $ArgumentList) { [void]$shell.AddArgument($argument) }
+        $inputBuffer.Complete()
+        $asyncResult = [DshAsyncPowerShell]::Begin($shell, $inputBuffer, $outputBuffer)
+        return [pscustomobject]@{
+            Shell       = $shell
+            Input       = $inputBuffer
+            Output      = $outputBuffer
+            OutputIndex = 0
+            AsyncResult = $asyncResult
+        }
+    } catch {
+        $shell.Dispose()
+        $inputBuffer.Dispose()
+        $outputBuffer.Dispose()
+        throw
+    }
+}
+
+function Receive-BackgroundOperation {
+    param([Parameter(Mandatory)][object]$Operation)
+
+    $items = New-Object System.Collections.Generic.List[object]
+    $count = $Operation.Output.Count
+    for ($index = [int]$Operation.OutputIndex; $index -lt $count; $index++) {
+        $item = $Operation.Output[$index]
+        if ($item -is [System.Management.Automation.PSObject]) {
+            $items.Add($item.BaseObject)
+        } else {
+            $items.Add($item)
+        }
+    }
+    $Operation.OutputIndex = $count
+    return $items.ToArray()
+}
+
+function Complete-BackgroundOperation {
+    param([Parameter(Mandatory)][object]$Operation)
+
+    $reason = $null
+    try {
+        $null = $Operation.Shell.EndInvoke($Operation.AsyncResult)
+    } catch {
+        $reason = $_.Exception
+    }
+    $state = $Operation.Shell.InvocationStateInfo.State.ToString()
+    if ($null -eq $reason) { $reason = $Operation.Shell.InvocationStateInfo.Reason }
+    $remaining = @(Receive-BackgroundOperation -Operation $Operation)
+    $Operation.Shell.Dispose()
+    $Operation.Input.Dispose()
+    $Operation.Output.Dispose()
+    return [pscustomobject]@{ State = $state; Reason = $reason; Output = $remaining }
+}
+
+function Stop-BackgroundOperation {
+    param([object]$Operation)
+
+    if ($null -eq $Operation) { return }
+    try { $Operation.Shell.Stop() } catch { }
+    try { $null = $Operation.Shell.EndInvoke($Operation.AsyncResult) } catch { }
+    $Operation.Shell.Dispose()
+    $Operation.Input.Dispose()
+    $Operation.Output.Dispose()
+}
+
+function Append-TerminalLines {
+    param([object[]]$Lines)
+
+    if ($null -eq $Lines -or $Lines.Count -eq 0) { return }
+    $builder = New-Object Text.StringBuilder
+    foreach ($line in $Lines) {
+        if ($null -eq $line) { continue }
+        $text = $line.ToString()
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        [void]$builder.AppendLine($text)
+    }
+    if ($builder.Length -eq 0) { return }
+    $terminalOutput.AppendText($builder.ToString())
+    if ($terminalOutput.Text.Length -gt 750000) {
+        $terminalOutput.Text = $terminalOutput.Text.Substring($terminalOutput.Text.Length - 500000)
+        $terminalOutput.CaretIndex = $terminalOutput.Text.Length
+    }
+    $terminalOutput.ScrollToEnd()
+}
+
 function Append-TerminalLine {
     param([object]$Line)
-
-    if ($null -eq $Line) { return }
-    $text = $Line.ToString()
-    if ([string]::IsNullOrWhiteSpace($text)) { return }
-    $terminalOutput.AppendText($text + [Environment]::NewLine)
-    $terminalOutput.ScrollToEnd()
+    Append-TerminalLines -Lines @($Line)
 }
 
 function Initialize-WebLogView {
@@ -490,10 +622,12 @@ function Initialize-WebLogView {
             $lines = @($lines[($lines.Count - 60)..($lines.Count - 1)])
         }
 
-        Append-TerminalLine '[DSH] Current Harness runtime output:'
+        $displayLines = New-Object System.Collections.Generic.List[object]
+        $displayLines.Add('[DSH] Current Harness runtime output:')
         foreach ($line in $lines) {
-            Append-TerminalLine ($line -replace '\x1B\[[0-?]*[ -/]*[@-~]', '')
+            $displayLines.Add(($line -replace '\x1B\[[0-?]*[ -/]*[@-~]', ''))
         }
+        Append-TerminalLines -Lines $displayLines.ToArray()
         $script:webLogOffset = (Get-Item -LiteralPath $webLogPath -ErrorAction Stop).Length
     } catch {
         Append-TerminalLine ("[WARN] Unable to read Harness log: " + $_.Exception.Message)
@@ -520,11 +654,13 @@ function Read-WebLogDelta {
         $reader = New-Object IO.StreamReader($stream, (New-Object Text.UTF8Encoding($false)), $true, 4096, $true)
         $text = $reader.ReadToEnd()
         $script:webLogOffset = $stream.Position
+        $displayLines = New-Object System.Collections.Generic.List[object]
         foreach ($line in ($text -split '\r?\n|\r')) {
             if (-not [string]::IsNullOrWhiteSpace($line)) {
-                Append-TerminalLine ($line -replace '\x1B\[[0-?]*[ -/]*[@-~]', '')
+                $displayLines.Add(($line -replace '\x1B\[[0-?]*[ -/]*[@-~]', ''))
             }
         }
+        Append-TerminalLines -Lines $displayLines.ToArray()
     } catch {
         # A writer may briefly rotate or reopen the file. The next timer tick retries.
     } finally {
@@ -656,6 +792,8 @@ function Invoke-ExactLogRotation {
 }
 
 function Show-DshWindow {
+    if ($null -ne $webLogTimer) { $webLogTimer.Start() }
+    if ($null -ne $serviceStateTimer) { $serviceStateTimer.Start() }
     if (-not $script:isBusy) {
         Set-ServiceState (Test-WebUiRunning)
     }
@@ -671,6 +809,8 @@ function Show-DshWindow {
 }
 
 function Hide-DshToTray {
+    if ($null -ne $webLogTimer) { $webLogTimer.Stop() }
+    if ($null -ne $serviceStateTimer) { $serviceStateTimer.Stop() }
     $window.ShowInTaskbar = $false
     $window.Hide()
     if (-not $script:trayHintShown) {
@@ -734,7 +874,7 @@ function Start-UpdateCheck {
     }
     $script:updateWasInstall = $installing
     $script:activeJobKind = 'update'
-    $script:activeJob = Start-Job -ScriptBlock {
+    $script:activeJob = Start-BackgroundOperation -ScriptBlock {
         param($PowerShellPath, $UpdateScriptPath, $HarnessPath)
         & $PowerShellPath -NoProfile -ExecutionPolicy Bypass -File $UpdateScriptPath `
             -CheckOnly -HarnessPath $HarnessPath 2>&1 |
@@ -754,7 +894,7 @@ function Start-SystemDiagnostics {
     $terminalButtonText.Text = '收起终端'
     Set-LauncherBusy $true '正在系统诊断' '正在检查启动器、核心、插件、端口与运行环境'
     $script:activeJobKind = 'diagnostics'
-    $script:activeJob = Start-Job -ScriptBlock {
+    $script:activeJob = Start-BackgroundOperation -ScriptBlock {
         param($PowerShellPath, $DiagnosticsScriptPath, $HarnessPath, $LauncherPath)
         & $PowerShellPath -NoProfile -ExecutionPolicy Bypass -File $DiagnosticsScriptPath `
             -HarnessPath $HarnessPath -LauncherRoot $LauncherPath 2>&1 |
@@ -788,7 +928,7 @@ function Start-WebUi {
     Append-TerminalLine '[DSH] Preparing the WebUI...'
     Set-LauncherBusy $true '正在启动 WebUI' '正在启动本地服务，准备就绪后将打开浏览器'
     $script:activeJobKind = 'web'
-    $script:activeJob = Start-Job -ScriptBlock {
+    $script:activeJob = Start-BackgroundOperation -ScriptBlock {
         param($RepoPath, $ServerScriptPath, $WebLogPath)
 
         $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -862,7 +1002,7 @@ function Stop-WebUi {
     Append-TerminalLine '[DSH] Stopping the WebUI service...'
     Set-LauncherBusy $true '正在停止 WebUI' '正在结束本地 Harness 服务进程'
     $script:activeJobKind = 'stop'
-    $script:activeJob = Start-Job -ScriptBlock {
+    $script:activeJob = Start-BackgroundOperation -ScriptBlock {
         $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -eq $listener) {
             '[DSH] WebUI is not running (port 3080 is free).'
@@ -893,7 +1033,7 @@ function Restart-WebUi {
     Append-TerminalLine '[DSH] Restarting the WebUI service...'
     Set-LauncherBusy $true '正在重启 WebUI' '正在停止旧服务并重新启动本地 Harness'
     $script:activeJobKind = 'restart'
-    $script:activeJob = Start-Job -ScriptBlock {
+    $script:activeJob = Start-BackgroundOperation -ScriptBlock {
         param($RepoPath, $ServerScriptPath, $WebLogPath)
 
         # 1) Stop whatever is listening on 3080 (if anything)
@@ -989,7 +1129,7 @@ function Refresh-PluginList {
     if ($null -ne $script:pluginManagerDialogStatus) { $script:pluginManagerDialogStatus.Text = '正在加载插件列表…' }
 
     # 在后台任务中运行插件管理器，避免在 UI 线程上同步启动 powershell.exe 造成卡顿
-    $script:pluginLoadJob = Start-Job -ScriptBlock {
+    $script:pluginLoadJob = Start-BackgroundOperation -ScriptBlock {
         param($PowerShellPath, $ManagerScriptPath, $HarnessPath)
         $output = & $PowerShellPath -NoProfile -ExecutionPolicy Bypass -File $ManagerScriptPath `
             -Action list -HarnessPath $HarnessPath 2>&1 | ForEach-Object { $_.ToString() }
@@ -1010,7 +1150,7 @@ function Start-PluginManagerAction {
     $isUpdate = $Action -eq 'update'
     Set-LauncherBusy $true $(if ($isUpdate) { '正在更新插件' } else { '正在更新插件状态' }) "正在$Action $($Plugin.Name)"
     $script:activeJobKind = if ($isUpdate) { 'plugin-update' } else { 'plugin-toggle' }
-    $script:activeJob = Start-Job -ScriptBlock {
+    $script:activeJob = Start-BackgroundOperation -ScriptBlock {
         param($PowerShellPath, $ManagerScriptPath, $HarnessPath, $RequestedAction, $PluginName)
         & $PowerShellPath -NoProfile -ExecutionPolicy Bypass -File $ManagerScriptPath `
             -Action $RequestedAction -Name $PluginName -HarnessPath $HarnessPath 2>&1 |
@@ -1033,9 +1173,9 @@ function Show-PluginManager {
     $dialog.Owner = $window
     $dialog.WindowStartupLocation = [Windows.WindowStartupLocation]::CenterOwner
     $dialog.WindowStyle = 'None'
-    $dialog.AllowsTransparency = $true
+    $dialog.AllowsTransparency = $false
     $dialog.ResizeMode = 'NoResize'
-    $dialog.Background = [Windows.Media.Brushes]::Transparent
+    $dialog.Background = '#F5F5F7'
     $dialog.FontFamily = 'Segoe UI Variable, Microsoft YaHei UI'
 
     # 标题栏 / 任务栏图标从 PowerShell 默认图标换成 DSH 黑鲸图标
@@ -1167,22 +1307,16 @@ function Show-PluginManager {
         return $b
     }
 
-    # ---------- 外框：无边框圆角卡片 + 阴影 ----------
+    # ---------- 外框：保持无边框样式，但使用普通不透明窗口以启用硬件合成 ----------
     $outer = New-Object Windows.Controls.Grid
-    $outer.Background = 'Transparent'
+    $outer.Background = $pageBg
 
     $chrome = New-Object Windows.Controls.Border
-    $chrome.Margin = '14'
-    $chrome.CornerRadius = '12'
+    $chrome.Margin = '0'
+    $chrome.CornerRadius = '0'
     $chrome.Background = $pageBg
     $chrome.BorderBrush = '#E4E4E8'
     $chrome.BorderThickness = '1'
-    $shadow = New-Object Windows.Media.Effects.DropShadowEffect
-    $shadow.BlurRadius = 26
-    $shadow.ShadowDepth = 7
-    $shadow.Opacity = 0.16
-    $shadow.Color = '#000000'
-    $chrome.Effect = $shadow
     $outer.Children.Add($chrome) | Out-Null
 
     $clipGrid = New-Object Windows.Controls.Grid
@@ -1196,7 +1330,7 @@ function Show-PluginManager {
     $headerBorder.Background = $headerBg
     $headerBorder.BorderBrush = $border
     $headerBorder.BorderThickness = '0,0,0,1'
-    $headerBorder.CornerRadius = '12,12,0,0'
+    $headerBorder.CornerRadius = '0'
     [Windows.Controls.Grid]::SetRow($headerBorder, 0)
     $clipGrid.Children.Add($headerBorder) | Out-Null
 
@@ -1221,7 +1355,7 @@ function Show-PluginManager {
     [Windows.Media.RenderOptions]::SetBitmapScalingMode($whale, [Windows.Media.BitmapScalingMode]::HighQuality)
     $whalePath = Join-Path $launcherRoot 'assets\DSHarness-v2.png'
     if (Test-Path -LiteralPath $whalePath) {
-        try { $whale.Source = New-Object Windows.Media.Imaging.BitmapImage -ArgumentList ([Uri]$whalePath) } catch { }
+        try { $whale.Source = New-OptimizedBitmapImage -Path $whalePath -DecodePixelWidth 64 } catch { }
     }
     $brandStack.Children.Add($whale) | Out-Null
 
@@ -1416,11 +1550,13 @@ function Start-TerminalCommand {
     $terminalInput.Clear()
     Set-LauncherBusy $true '终端命令运行中' $CommandText
     $script:activeJobKind = 'terminal'
-    $script:activeJob = Start-Job -ScriptBlock {
+    $script:activeJob = Start-BackgroundOperation -ScriptBlock {
         param($WorkingDirectory, $Command)
         Set-Location -LiteralPath $WorkingDirectory
         & $env:ComSpec /d /c $Command 2>&1 | ForEach-Object { $_.ToString() }
-        exit $LASTEXITCODE
+        if ($LASTEXITCODE -ne 0) {
+            throw "Terminal command exited with code $LASTEXITCODE"
+        }
     } -ArgumentList $repoPath, $CommandText
 }
 
@@ -1428,11 +1564,12 @@ $jobTimer = New-Object Windows.Threading.DispatcherTimer
 $jobTimer.Interval = [TimeSpan]::FromMilliseconds(220)
 $jobTimer.Add_Tick({
     if ($null -ne $script:pluginLoadJob) {
-        $pluginLoadState = $script:pluginLoadJob.State
+        $pluginLoadState = $script:pluginLoadJob.Shell.InvocationStateInfo.State.ToString()
         if ($pluginLoadState -in @('Completed', 'Failed', 'Stopped')) {
-            $pluginLoadOutput = Receive-Job -Job $script:pluginLoadJob -ErrorAction SilentlyContinue
-            $pluginLoadReason = $script:pluginLoadJob.ChildJobs[0].JobStateInfo.Reason
-            Remove-Job -Job $script:pluginLoadJob -Force -ErrorAction SilentlyContinue
+            $pluginLoadResult = Complete-BackgroundOperation -Operation $script:pluginLoadJob
+            $pluginLoadOutput = $pluginLoadResult.Output
+            $pluginLoadReason = $pluginLoadResult.Reason
+            $pluginLoadState = $pluginLoadResult.State
             $script:pluginLoadJob = $null
             if ($pluginLoadState -eq 'Completed') {
                 try {
@@ -1464,16 +1601,15 @@ $jobTimer.Add_Tick({
     }
     if ($null -eq $script:activeJob) { return }
 
-    $output = Receive-Job -Job $script:activeJob -ErrorAction SilentlyContinue
-    foreach ($line in $output) { Append-TerminalLine $line }
+    $output = @(Receive-BackgroundOperation -Operation $script:activeJob)
+    Append-TerminalLines -Lines $output
 
-    if ($script:activeJob.State -in @('Completed', 'Failed', 'Stopped')) {
-        $state = $script:activeJob.State
-        $remaining = Receive-Job -Job $script:activeJob -ErrorAction SilentlyContinue
-        foreach ($line in $remaining) { Append-TerminalLine $line }
-
-        $reason = $script:activeJob.ChildJobs[0].JobStateInfo.Reason
-        Remove-Job -Job $script:activeJob -Force -ErrorAction SilentlyContinue
+    $operationState = $script:activeJob.Shell.InvocationStateInfo.State.ToString()
+    if ($operationState -in @('Completed', 'Failed', 'Stopped')) {
+        $result = Complete-BackgroundOperation -Operation $script:activeJob
+        $state = $result.State
+        $reason = $result.Reason
+        Append-TerminalLines -Lines $result.Output
         $completedKind = $script:activeJobKind
         $script:activeJob = $null
         $script:activeJobKind = ''
@@ -1550,11 +1686,11 @@ $jobTimer.Add_Tick({
 })
 
 $webLogTimer = New-Object Windows.Threading.DispatcherTimer
-$webLogTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+$webLogTimer.Interval = [TimeSpan]::FromSeconds(1)
 $webLogTimer.Add_Tick({ Read-WebLogDelta })
 
 $serviceStateTimer = New-Object Windows.Threading.DispatcherTimer
-$serviceStateTimer.Interval = [TimeSpan]::FromSeconds(3)
+$serviceStateTimer.Interval = [TimeSpan]::FromSeconds(5)
 $serviceStateTimer.Add_Tick({
     if ($null -ne $script:activeJob) { return }
     $running = Test-WebUiRunning
@@ -1660,12 +1796,15 @@ $window.Add_Closed({
     $webLogTimer.Stop()
     $serviceStateTimer.Stop()
     if ($null -ne $script:activeJob) {
-        Stop-Job -Job $script:activeJob -ErrorAction SilentlyContinue
-        Remove-Job -Job $script:activeJob -Force -ErrorAction SilentlyContinue
+        Stop-BackgroundOperation -Operation $script:activeJob
     }
     if ($null -ne $script:pluginLoadJob) {
-        Stop-Job -Job $script:pluginLoadJob -ErrorAction SilentlyContinue
-        Remove-Job -Job $script:pluginLoadJob -Force -ErrorAction SilentlyContinue
+        Stop-BackgroundOperation -Operation $script:pluginLoadJob
+    }
+    if ($null -ne $script:backgroundRunspacePool) {
+        $script:backgroundRunspacePool.Close()
+        $script:backgroundRunspacePool.Dispose()
+        $script:backgroundRunspacePool = $null
     }
     $trayIcon.Visible = $false
     $trayIcon.Dispose()

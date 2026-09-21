@@ -11,8 +11,8 @@
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         ResizeMode="NoResize"
-        AllowsTransparency="True"
-        Background="Transparent"
+        AllowsTransparency="False"
+        Background="#F5F5F7"
         ShowInTaskbar="True"
         FontFamily="Segoe UI Variable, Microsoft YaHei UI">
     <Window.Resources>
@@ -187,12 +187,9 @@
         </Style>
     </Window.Resources>
 
-    <Grid Background="Transparent">
-        <Border Margin="12" CornerRadius="12" Background="{StaticResource PageBackground}"
+    <Grid Background="{StaticResource PageBackground}">
+        <Border Margin="0" CornerRadius="0" Background="{StaticResource PageBackground}"
                 BorderBrush="#E4E4E8" BorderThickness="1">
-            <Border.Effect>
-                <DropShadowEffect BlurRadius="30" ShadowDepth="8" Opacity="0.16" Color="#000000" />
-            </Border.Effect>
             <Grid ClipToBounds="True">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="58" />
@@ -201,7 +198,7 @@
                 </Grid.RowDefinitions>
 
                 <Border Grid.Row="0" Background="#FBFBFD" BorderBrush="#E5E5EA" BorderThickness="0,0,0,1"
-                        CornerRadius="12,12,0,0">
+                        CornerRadius="0">
                     <Grid>
                         <Grid x:Name="DragArea" Background="Transparent" Margin="0,0,96,0">
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="24,0,0,0">
@@ -249,9 +246,6 @@
 
                         <Border Grid.Row="1" Margin="0,20,0,0" Padding="18" CornerRadius="18"
                                 Background="{StaticResource Surface}" BorderBrush="#EBEBF0" BorderThickness="1">
-                            <Border.Effect>
-                                <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.07" Color="#000000" />
-                            </Border.Effect>
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -385,9 +379,6 @@
                         </Grid.RowDefinitions>
                         <Border Grid.Row="0" CornerRadius="20" Background="{StaticResource Surface}"
                                 BorderBrush="#EBEBF0" BorderThickness="1" ClipToBounds="True">
-                            <Border.Effect>
-                                <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.07" Color="#000000" />
-                            </Border.Effect>
                             <Grid>
                                 <Image x:Name="MaidImage" Width="255" Height="255" Stretch="Uniform"
                                        HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -397,9 +388,6 @@
 
                         <Border Grid.Row="1" Margin="0,14,0,0" Padding="16" CornerRadius="18"
                                 Background="{StaticResource Surface}" BorderBrush="#EBEBF0" BorderThickness="1">
-                            <Border.Effect>
-                                <DropShadowEffect BlurRadius="12" ShadowDepth="2" Opacity="0.06" Color="#000000" />
-                            </Border.Effect>
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -474,9 +462,6 @@
                 <Border x:Name="TerminalPanel" Grid.Row="1" Grid.RowSpan="2" Visibility="Collapsed"
                         Height="260" Margin="28,0,28,48" VerticalAlignment="Bottom" Panel.ZIndex="20"
                         CornerRadius="16" Background="#08111F" BorderBrush="#304862" BorderThickness="1">
-                    <Border.Effect>
-                        <DropShadowEffect BlurRadius="20" ShadowDepth="6" Opacity="0.34" Color="#07101E" />
-                    </Border.Effect>
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="40" />
