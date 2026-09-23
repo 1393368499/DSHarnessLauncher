@@ -379,11 +379,13 @@
                         </Grid.RowDefinitions>
                         <Border Grid.Row="0" CornerRadius="20" Background="{StaticResource Surface}"
                                 BorderBrush="#EBEBF0" BorderThickness="1" ClipToBounds="True">
-                            <Grid>
-                                <Image x:Name="MaidImage" Width="255" Height="255" Stretch="Uniform"
-                                       HorizontalAlignment="Center" VerticalAlignment="Center"
-                                       RenderOptions.BitmapScalingMode="HighQuality" Visibility="Collapsed" />
-                            </Grid>
+                            <Border x:Name="MaidImage" CornerRadius="19" Visibility="Collapsed">
+                                <Border.Background>
+                                    <ImageBrush x:Name="MaidImageBrush" Stretch="UniformToFill"
+                                                AlignmentX="Center" AlignmentY="Center"
+                                                RenderOptions.BitmapScalingMode="HighQuality" />
+                                </Border.Background>
+                            </Border>
                         </Border>
 
                         <Border Grid.Row="1" Margin="0,14,0,0" Padding="16" CornerRadius="18"

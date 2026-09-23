@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "2.0.3",
+  "version": "2.1.0",
   "core": {
     "packageName": "@deepseek-ai/dsh-root",
     "minimumVersion": "0.1.2-alpha.2",
@@ -9,6 +9,7 @@
   },
   "launcher": {
     "requiredFiles": [
+      "DSH.exe",
       "DSH-Launcher.ps1",
       "DSH-CoreCompatibility.ps1",
       "DSH-LauncherCompatibility.ps1",
@@ -18,8 +19,13 @@
       "DSH-PluginCompatibility.ps1",
       "DSH-Diagnostics.ps1",
       "DSH-UI.ps1",
+      "DSH-Launcher.Runtime.dll",
+      "DSH-Launcher.Xaml.dll",
       "LauncherWindow.xaml",
-      "Start-DSH-Web.cmd"
+      "Start-DSH-Web.cmd",
+      "DSH-unified-v5.ico",
+      "assets/DSH-office-maid-display.jpg",
+      "assets/DSHarness-v2-display.png"
     ]
   },
   "update": {

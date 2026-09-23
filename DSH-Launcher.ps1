@@ -320,38 +320,64 @@ try {
     }
 
     Write-LauncherStatus "Checking the official Harness repository for updates (branch: $branch)..." Cyan
-    # Prefer a direct GitHub connection. A stale machine-level loopback proxy is common on
-    # Windows after a proxy client exits, and should not make every update look like a failure.
+    # Fetch only the active branch, omit release tags, and defer unchanged blob content. The
+    # upstream repository is large enough that a normal fetch can transfer tens of thousands
+    # of unrelated objects and is frequently reset by local proxy routes. HTTP/1.1 is more
+    # reliable than HTTP/2 through the supported SOCKS/HTTP proxy clients on Windows.
+    $remoteRef = "origin/$branch"
+    $fetchRefSpec = "+refs/heads/$branch`:refs/remotes/origin/$branch"
+    $fetchArguments = @('-C', $HarnessPath, 'fetch', '--no-tags', '--filter=blob:none', '--prune', 'origin', $fetchRefSpec)
+    $fetchRoutes = @(
+        [pscustomobject]@{
+            Label = 'direct connection'
+            Configuration = @('-c', 'http.version=HTTP/1.1', '-c', 'http.proxy=', '-c', 'https.proxy=')
+        },
+        [pscustomobject]@{
+            Label = 'configured Git network route'
+            Configuration = @('-c', 'http.version=HTTP/1.1')
+        },
+        [pscustomobject]@{
+            Label = 'configured Git network route (retry)'
+            Configuration = @('-c', 'http.version=HTTP/1.1')
+        }
+    )
+    $fetchSucceeded = $false
+    $successfulFetchConfiguration = @('-c', 'http.version=HTTP/1.1')
+    $fetchAttemptOutput = New-Object System.Collections.ArrayList
     $previousFetchErrorPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $directFetchOutput = @(& $gitPath -c http.proxy= -c https.proxy= -C $HarnessPath fetch --prune origin 2>&1 | ForEach-Object { ConvertTo-CommandOutputLine $_ })
-        $directFetchExitCode = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $previousFetchErrorPreference
-    }
-    $fetchSucceeded = $directFetchExitCode -eq 0
-    $configuredFetchOutput = @()
-    if (-not $fetchSucceeded) {
-        Write-LauncherStatus 'The direct update check did not complete. Retrying with the configured Git network settings...' Yellow
+    foreach ($route in $fetchRoutes) {
+        if ($route.Label -ne 'direct connection') {
+            if ($route.Label -match '\(retry\)') {
+                Write-LauncherStatus 'The configured Git route was interrupted. Retrying the reduced update once...' Yellow
+                Start-Sleep -Seconds 2
+            } else {
+                Write-LauncherStatus 'The direct update check did not complete. Retrying with the configured Git network settings...' Yellow
+            }
+        }
+
+        $arguments = @($route.Configuration) + $fetchArguments
         $ErrorActionPreference = 'Continue'
         try {
-            $configuredFetchOutput = @(& $gitPath -C $HarnessPath fetch --prune origin 2>&1 | ForEach-Object { ConvertTo-CommandOutputLine $_ })
-            $configuredFetchExitCode = $LASTEXITCODE
+            $attemptOutput = @(& $gitPath @arguments 2>&1 | ForEach-Object { ConvertTo-CommandOutputLine $_ })
+            $attemptExitCode = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $previousFetchErrorPreference
         }
-        $fetchSucceeded = $configuredFetchExitCode -eq 0
+        foreach ($line in $attemptOutput) { [void]$fetchAttemptOutput.Add($line) }
+        if ($attemptExitCode -eq 0) {
+            $fetchSucceeded = $true
+            $successfulFetchConfiguration = @($route.Configuration)
+            break
+        }
     }
     $updated = $false
 
     if (-not $fetchSucceeded) {
-        $fetchDetail = @($configuredFetchOutput + $directFetchOutput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1)
+        $fetchDetail = @($fetchAttemptOutput | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1)
         $detailSuffix = if ($fetchDetail.Count -gt 0) { " Detail: $($fetchDetail[0])" } else { '' }
         Add-UpdateWarning ("The official core could not be checked. The verified local version will remain available." + $detailSuffix)
         $updateResult.coreStatus = 'check-unavailable'
     } else {
-        $remoteRef = "origin/$branch"
         & $gitPath -C $HarnessPath rev-parse --verify $remoteRef *> $null
         if ($LASTEXITCODE -ne 0) {
             Write-LauncherStatus "Remote branch $remoteRef was not found. The local version will be used." Yellow
@@ -381,7 +407,9 @@ try {
                     Stop-WebServiceForCoreUpdate
                     # Fetch already downloaded and verified origin/$branch. Fast-forward locally so a
                     # broken configured proxy cannot make a second, redundant network request fail.
-                    Invoke-CheckedCommand -FilePath $gitPath -Arguments @('-C', $HarnessPath, 'merge', '--ff-only', $remoteRef) -FailureMessage 'Failed to apply the fetched Harness update'
+                    # Preserve the route that completed the filtered fetch. A partial fetch may
+                    # retrieve a small number of changed blobs lazily while updating the worktree.
+                    Invoke-CheckedCommand -FilePath $gitPath -Arguments @($successfulFetchConfiguration + @('-C', $HarnessPath, 'merge', '--ff-only', $remoteRef)) -FailureMessage 'Failed to apply the fetched Harness update'
                     $updated = $true
                     $updateResult.coreStatus = 'installing'
                     Write-LauncherStatus 'Harness update completed.' Green

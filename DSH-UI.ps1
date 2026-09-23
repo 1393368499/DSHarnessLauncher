@@ -1,193 +1,25 @@
 ﻿$ErrorActionPreference = 'Stop'
 
+$launcherRoot = $PSScriptRoot
+$runtimeAssemblyPath = Join-Path $launcherRoot 'DSH-Launcher.Runtime.dll'
+
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-
-public static class DshApplicationIdentity
-{
-    [StructLayout(LayoutKind.Sequential, Pack = 4)]
-    private struct PROPERTYKEY
-    {
-        public Guid fmtid;
-        public uint pid;
-
-        public PROPERTYKEY(Guid formatId, uint propertyId)
-        {
-            fmtid = formatId;
-            pid = propertyId;
-        }
-    }
-
-    [StructLayout(LayoutKind.Explicit)]
-    private struct PROPVARIANT
-    {
-        [FieldOffset(0)] public ushort vt;
-        [FieldOffset(8)] public IntPtr pointerValue;
-
-        public static PROPVARIANT FromString(string value)
-        {
-            PROPVARIANT result = new PROPVARIANT();
-            result.vt = 31; // VT_LPWSTR
-            result.pointerValue = Marshal.StringToCoTaskMemUni(value ?? String.Empty);
-            return result;
-        }
-    }
-
-    [ComImport]
-    [Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IPropertyStore
-    {
-        [PreserveSig] int GetCount(out uint propertyCount);
-        [PreserveSig] int GetAt(uint propertyIndex, out PROPERTYKEY key);
-        [PreserveSig] int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
-        [PreserveSig] int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
-        [PreserveSig] int Commit();
-    }
-
-    private static readonly Guid AppUserModelFormatId = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
-    private static readonly Guid PropertyStoreInterfaceId = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern int SetCurrentProcessExplicitAppUserModelID(string appID);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
-    private static extern void SHGetPropertyStoreFromParsingName(
-        [MarshalAs(UnmanagedType.LPWStr)] string path,
-        IntPtr bindContext,
-        uint flags,
-        ref Guid interfaceId,
-        [MarshalAs(UnmanagedType.Interface)] out IPropertyStore propertyStore);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern void SHChangeNotify(
-        uint eventId,
-        uint flags,
-        [MarshalAs(UnmanagedType.LPWStr)] string item1,
-        IntPtr item2);
-
-    [DllImport("ole32.dll")]
-    private static extern int PropVariantClear(ref PROPVARIANT value);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr FindWindow(string className, string windowName);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsIconic(IntPtr windowHandle);
-
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr windowHandle, int command);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr windowHandle);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    private static extern int RegisterApplicationRestart(string commandLineArgs, int flags);
-
-    [DllImport("kernel32.dll")]
-    private static extern int UnregisterApplicationRestart();
-
-    private static void SetString(IPropertyStore store, uint propertyId, string value)
-    {
-        PROPERTYKEY key = new PROPERTYKEY(AppUserModelFormatId, propertyId);
-        PROPVARIANT propertyValue = PROPVARIANT.FromString(value);
-        try
-        {
-            Marshal.ThrowExceptionForHR(store.SetValue(ref key, ref propertyValue));
-        }
-        finally
-        {
-            PropVariantClear(ref propertyValue);
-        }
-    }
-
-    private static void ApplyIdentity(
-        IPropertyStore store,
-        string appId,
-        string relaunchCommand,
-        string displayName,
-        string iconResource)
-    {
-        SetString(store, 5, appId);          // System.AppUserModel.ID
-        SetString(store, 2, relaunchCommand); // System.AppUserModel.RelaunchCommand
-        SetString(store, 4, displayName);     // System.AppUserModel.RelaunchDisplayNameResource
-        SetString(store, 3, iconResource);    // System.AppUserModel.RelaunchIconResource
-        Marshal.ThrowExceptionForHR(store.Commit());
-    }
-
-    public static void SetShortcutIdentity(
-        string shortcutPath,
-        string appId,
-        string relaunchCommand,
-        string displayName,
-        string iconResource)
-    {
-        IPropertyStore store;
-        Guid interfaceId = PropertyStoreInterfaceId;
-        SHGetPropertyStoreFromParsingName(shortcutPath, IntPtr.Zero, 2, ref interfaceId, out store); // GPS_READWRITE
-        try
-        {
-            ApplyIdentity(store, appId, relaunchCommand, displayName, iconResource);
-        }
-        finally
-        {
-            if (store != null) Marshal.FinalReleaseComObject(store);
-        }
-        SHChangeNotify(0x00002000, 0x0005, shortcutPath, IntPtr.Zero); // SHCNE_UPDATEITEM, SHCNF_PATHW
-    }
-
-    public static bool ActivateExistingWindow()
-    {
-        IntPtr handle = FindWindow(null, "DSH");
-        if (handle == IntPtr.Zero) return false;
-        if (IsIconic(handle)) ShowWindow(handle, 9); // SW_RESTORE
-        else ShowWindow(handle, 5); // SW_SHOW
-        return SetForegroundWindow(handle);
-    }
-
-    public static int EnableApplicationRestart(string commandLineArgs)
-    {
-        return RegisterApplicationRestart(commandLineArgs, 0);
-    }
-
-    public static void DisableApplicationRestart()
-    {
-        UnregisterApplicationRestart();
-    }
+if (-not (Test-Path -LiteralPath $runtimeAssemblyPath)) {
+    throw "Launcher runtime assembly not found: $runtimeAssemblyPath"
 }
-'@
+Add-Type -LiteralPath $runtimeAssemblyPath
 
-# Start-Job launches a new powershell.exe and blocks the dispatcher while that
-# process is being prepared. Keep a small in-process runspace pool alive and
-# use the generic BeginInvoke overload through this bridge instead.
-Add-Type -ReferencedAssemblies ([System.Management.Automation.PSObject].Assembly.Location) -TypeDefinition @'
-using System;
-using System.Management.Automation;
-
-public static class DshAsyncPowerShell
-{
-    public static IAsyncResult Begin(
-        PowerShell shell,
-        PSDataCollection<PSObject> input,
-        PSDataCollection<PSObject> output)
-    {
-        return shell.BeginInvoke<PSObject, PSObject>(input, output);
-    }
-}
-'@
-
-$launcherRoot = $PSScriptRoot
 $stateRoot = Join-Path $env:LOCALAPPDATA 'DSH'
 $statePath = Join-Path $stateRoot 'launcher.json'
+$launcherLogPath = Join-Path $stateRoot 'logs\launcher.log'
 $defaultHarnessPath = Join-Path $launcherRoot 'deepseek-harness'
 $xamlPath = Join-Path $launcherRoot 'LauncherWindow.xaml'
+$compiledXamlPath = Join-Path $launcherRoot 'DSH-Launcher.Xaml.dll'
 $launcherManifestPath = Join-Path $launcherRoot 'launcher-manifest.json'
 $updateScript = Join-Path $launcherRoot 'DSH-Launcher.ps1'
 $diagnosticsScript = Join-Path $launcherRoot 'DSH-Diagnostics.ps1'
@@ -225,27 +57,12 @@ $script:backgroundRunspacePool = [System.Management.Automation.Runspaces.Runspac
 $script:backgroundRunspacePool.ApartmentState = [Threading.ApartmentState]::MTA
 $script:backgroundRunspacePool.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
 $script:backgroundRunspacePool.Open()
+$script:runspaceWarmupTask = [DshRunspaceWarmup]::Begin($script:backgroundRunspacePool)
 
 $restartArguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $PSCommandPath + '"'
 [DshApplicationIdentity]::EnableApplicationRestart($restartArguments) | Out-Null
 
 [DshApplicationIdentity]::SetCurrentProcessExplicitAppUserModelID($appUserModelId) | Out-Null
-foreach ($shortcutPath in @(
-    (Join-Path $launcherRoot 'DSH.lnk'),
-    (Join-Path ([Environment]::GetFolderPath('Desktop')) 'DSH.lnk'),
-    (Join-Path ([Environment]::GetFolderPath('Programs')) 'DSH.lnk')
-)) {
-    if (Test-Path -LiteralPath $shortcutPath) {
-        try {
-            [DshApplicationIdentity]::SetShortcutIdentity(
-                $shortcutPath,
-                $appUserModelId,
-                $launcherRelaunchCommand,
-                'DSH',
-                $launcherIconResource)
-        } catch { }
-    }
-}
 
 function Test-HarnessInstallation {
     param([string]$Path)
@@ -370,9 +187,14 @@ if ([string]::IsNullOrWhiteSpace($repoPath)) { exit 0 }
 $script:harnessWasInstalled = Test-HarnessInstallation $repoPath
 $webLogPath = Join-Path $repoPath 'dsh-web.log'
 
-[xml]$xaml = Get-Content -LiteralPath $xamlPath -Raw -Encoding UTF8
-$reader = New-Object System.Xml.XmlNodeReader $xaml
-$window = [Windows.Markup.XamlReader]::Load($reader)
+if (Test-Path -LiteralPath $compiledXamlPath) {
+    Add-Type -LiteralPath $compiledXamlPath
+    $window = [DshCompiledXaml]::LoadWindow()
+} else {
+    [xml]$xaml = Get-Content -LiteralPath $xamlPath -Raw -Encoding UTF8
+    $reader = New-Object System.Xml.XmlNodeReader $xaml
+    $window = [Windows.Markup.XamlReader]::Load($reader)
+}
 $application = New-Object Windows.Application
 $application.ShutdownMode = [Windows.ShutdownMode]::OnExplicitShutdown
 
@@ -436,6 +258,7 @@ $commitLabel = Get-Control 'CommitLabel'
 $harnessPathLabel = Get-Control 'HarnessPathLabel'
 $brandIcon = Get-Control 'BrandIcon'
 $maidImage = Get-Control 'MaidImage'
+$maidImageBrush = Get-Control 'MaidImageBrush'
 $headerVersionLabel = Get-Control 'HeaderVersionLabel'
 $launcherVersionText = Get-Control 'LauncherVersionLabel'
 
@@ -464,30 +287,32 @@ if (Test-Path -LiteralPath $iconPath) {
     try { $window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$iconPath) } catch { }
 }
 
-$maidImagePath = Join-Path $launcherRoot 'assets\DSH-white-frame-v5.png'
-$brandIconPath = Join-Path $launcherRoot 'assets\DSHarness-v2.png'
+$maidImagePath = Join-Path $launcherRoot 'assets\DSH-office-maid-display.jpg'
+$brandIconPath = Join-Path $launcherRoot 'assets\DSHarness-v2-display.png'
 if (Test-Path -LiteralPath $brandIconPath) {
     try {
         $brandIcon.Source = New-OptimizedBitmapImage -Path $brandIconPath -DecodePixelWidth 96
         $brandIcon.Visibility = 'Visible'
     } catch { }
 }
-
 if (Test-Path -LiteralPath $maidImagePath) {
     try {
-        $maidImage.Source = New-OptimizedBitmapImage -Path $maidImagePath -DecodePixelWidth 510
+        $maidImageBrush.ImageSource = New-OptimizedBitmapImage -Path $maidImagePath -DecodePixelWidth 560
         $maidImage.Visibility = 'Visible'
     } catch { }
 }
 
 $script:activeJob = $null
 $script:activeJobKind = ''
+$script:startupLogJob = $null
 $script:allowExit = $false
 $script:trayHintShown = $false
 $script:updateWasInstall = $false
+$script:launcherLogOffset = 0L
 $script:webLogOffset = 0L
 $script:isBusy = $false
 $script:isWebRunning = $false
+$script:serviceProbeTask = $null
 $webAddress = 'http://127.0.0.1:3080/'
 
 $trayIcon = New-Object System.Windows.Forms.NotifyIcon
@@ -541,16 +366,15 @@ function Receive-BackgroundOperation {
     param([Parameter(Mandatory)][object]$Operation)
 
     $items = New-Object System.Collections.Generic.List[object]
-    $count = $Operation.Output.Count
-    for ($index = [int]$Operation.OutputIndex; $index -lt $count; $index++) {
-        $item = $Operation.Output[$index]
-        if ($item -is [System.Management.Automation.PSObject]) {
-            $items.Add($item.BaseObject)
-        } else {
-            $items.Add($item)
-        }
+    # PSDataCollection's PowerShell index adapter can return $null even when Count
+    # reports buffered objects. ReadAll is the thread-safe consumer API and removes
+    # only the items returned in this snapshot while the producer keeps running.
+    foreach ($item in @($Operation.Output.ReadAll())) {
+        # PowerShell already exposes PSDataCollection items as their adapted base
+        # objects. Testing `-is [PSObject]` is misleading here (even strings match)
+        # and reading BaseObject then yields $null.
+        $items.Add($item)
     }
-    $Operation.OutputIndex = $count
     return $items.ToArray()
 }
 
@@ -608,31 +432,42 @@ function Append-TerminalLine {
     Append-TerminalLines -Lines @($Line)
 }
 
-function Initialize-WebLogView {
-    if (-not (Test-Path -LiteralPath $webLogPath)) { return }
-    try {
-        $lines = @(Get-Content -LiteralPath $webLogPath -Tail 250 -Encoding UTF8 -ErrorAction Stop)
-        $lastRunStart = -1
-        for ($index = 0; $index -lt $lines.Count; $index++) {
-            if ($lines[$index] -match '^\$ node .*"web"') { $lastRunStart = $index }
-        }
-        if ($lastRunStart -ge 0) {
-            $lines = @($lines[$lastRunStart..($lines.Count - 1)])
-        } elseif ($lines.Count -gt 60) {
-            $lines = @($lines[($lines.Count - 60)..($lines.Count - 1)])
-        }
 
+function Read-LauncherLogDelta {
+    if (-not (Test-Path -LiteralPath $launcherLogPath)) { return }
+
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [IO.File]::Open(
+            $launcherLogPath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+        if ($stream.Length -lt $script:launcherLogOffset) {
+            $script:launcherLogOffset = 0L
+        }
+        if ($stream.Length -eq $script:launcherLogOffset) { return }
+
+        [void]$stream.Seek($script:launcherLogOffset, [IO.SeekOrigin]::Begin)
+        $reader = New-Object IO.StreamReader($stream, (New-Object Text.UTF8Encoding($false)), $true, 4096, $true)
+        $text = $reader.ReadToEnd()
+        $script:launcherLogOffset = $stream.Position
         $displayLines = New-Object System.Collections.Generic.List[object]
-        $displayLines.Add('[DSH] Current Harness runtime output:')
-        foreach ($line in $lines) {
-            $displayLines.Add(($line -replace '\x1B\[[0-?]*[ -/]*[@-~]', ''))
+        foreach ($line in ($text -split '\r?\n|\r')) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) {
+                $displayLines.Add(($line -replace '\x1B\[[0-?]*[ -/]*[@-~]', ''))
+            }
         }
         Append-TerminalLines -Lines $displayLines.ToArray()
-        $script:webLogOffset = (Get-Item -LiteralPath $webLogPath -ErrorAction Stop).Length
     } catch {
-        Append-TerminalLine ("[WARN] Unable to read Harness log: " + $_.Exception.Message)
+        # The updater may rotate or reopen the file. The next timer tick retries.
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
     }
 }
+
 
 function Read-WebLogDelta {
     if (-not (Test-Path -LiteralPath $webLogPath)) { return }
@@ -684,6 +519,9 @@ function Get-WebUiUrl {
             [IO.FileMode]::Open,
             [IO.FileAccess]::Read,
             [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+        if ($stream.Length -gt 131072) {
+            [void]$stream.Seek(-131072, [IO.SeekOrigin]::End)
+        }
         $reader = New-Object IO.StreamReader($stream, (New-Object Text.UTF8Encoding($false)), $true)
         $matches = [regex]::Matches($reader.ReadToEnd(), 'dsh web:\s+(http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+)')
         if ($matches.Count -gt 0) {
@@ -699,17 +537,10 @@ function Get-WebUiUrl {
     return $webAddress
 }
 
-function Test-WebUiRunning {
-    # Fast bounded socket probe: Get-NetTCPConnection is slow (hundreds of ms) and blocks the UI thread.
-    $client = New-Object System.Net.Sockets.TcpClient
-    try {
-        $task = $client.ConnectAsync('127.0.0.1', 3080)
-        if ($task.Wait(250)) { return $true }
-        return $false
-    } catch {
-        return $false
-    } finally {
-        $client.Dispose()
+
+function Start-ServiceProbe {
+    if ($null -eq $script:serviceProbeTask) {
+        $script:serviceProbeTask = [DshNetworkProbe]::Begin(80)
     }
 }
 
@@ -794,9 +625,6 @@ function Invoke-ExactLogRotation {
 function Show-DshWindow {
     if ($null -ne $webLogTimer) { $webLogTimer.Start() }
     if ($null -ne $serviceStateTimer) { $serviceStateTimer.Start() }
-    if (-not $script:isBusy) {
-        Set-ServiceState (Test-WebUiRunning)
-    }
     $window.ShowInTaskbar = $true
     $window.Show()
     if ($window.WindowState -eq [Windows.WindowState]::Minimized) {
@@ -828,9 +656,39 @@ function Update-CommitLabel {
         return
     }
     try {
-        $commit = (& git.exe -C $repoPath rev-parse --short=8 HEAD 2>$null).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($commit)) {
-            $commitLabel.Text = $commit.ToUpperInvariant()
+        $gitMarker = Join-Path $repoPath '.git'
+        $gitDirectory = $gitMarker
+        if (-not (Test-Path -LiteralPath $gitMarker -PathType Container)) {
+            $pointer = [IO.File]::ReadAllText($gitMarker).Trim()
+            if ($pointer -notmatch '^gitdir:\s*(.+)$') { throw 'Invalid .git pointer.' }
+            $gitDirectory = $matches[1]
+            if (-not [IO.Path]::IsPathRooted($gitDirectory)) {
+                $gitDirectory = Join-Path $repoPath $gitDirectory
+            }
+            $gitDirectory = [IO.Path]::GetFullPath($gitDirectory)
+        }
+
+        $head = [IO.File]::ReadAllText((Join-Path $gitDirectory 'HEAD')).Trim()
+        $commit = $head
+        if ($head -match '^ref:\s*(.+)$') {
+            $refName = $matches[1]
+            $refPath = Join-Path $gitDirectory ($refName -replace '/', [IO.Path]::DirectorySeparatorChar)
+            if (Test-Path -LiteralPath $refPath) {
+                $commit = [IO.File]::ReadAllText($refPath).Trim()
+            } else {
+                $packedRefsPath = Join-Path $gitDirectory 'packed-refs'
+                $packedLine = if (Test-Path -LiteralPath $packedRefsPath) {
+                    [IO.File]::ReadLines($packedRefsPath) |
+                        Where-Object { $_ -match ('^([0-9a-fA-F]{40})\s+' + [regex]::Escape($refName) + '$') } |
+                        Select-Object -First 1
+                }
+                if ($packedLine -match '^([0-9a-fA-F]{40})') { $commit = $matches[1] }
+            }
+        }
+        if ($commit -match '^[0-9a-fA-F]{8,}$') {
+            $commitLabel.Text = $commit.Substring(0, 8).ToUpperInvariant()
+        } else {
+            $commitLabel.Text = 'LOCAL'
         }
     } catch {
         $commitLabel.Text = 'LOCAL'
@@ -914,7 +772,8 @@ function Start-WebUi {
         return
     }
 
-    if (Test-WebUiRunning) {
+    Set-LauncherBusy $true '正在检查 WebUI' '正在确认本地服务状态'
+    if ($script:isWebRunning) {
         Set-ServiceState $true
         Set-LauncherBusy $false '服务运行中' '已在系统默认浏览器中打开 WebUI'
         try { Start-Process (Get-WebUiUrl) | Out-Null } catch {
@@ -1089,7 +948,16 @@ function Restart-WebUi {
     } -ArgumentList $repoPath, $serverScript, $webLogPath
 }
 $script:pluginManagerScript = Join-Path $launcherRoot 'DSH-PluginManager.ps1'
+$script:pluginCachePath = Join-Path $stateRoot 'plugin-list-cache.json'
 $script:pluginListData = @()
+if (Test-Path -LiteralPath $script:pluginCachePath) {
+    try {
+        $script:pluginListData = @(Get-Content -LiteralPath $script:pluginCachePath -Raw -Encoding UTF8 |
+            ConvertFrom-Json | ForEach-Object { $_ })
+    } catch {
+        $script:pluginListData = @()
+    }
+}
 
 function Invoke-PluginManager {
     param(
@@ -1130,14 +998,12 @@ function Refresh-PluginList {
 
     # 在后台任务中运行插件管理器，避免在 UI 线程上同步启动 powershell.exe 造成卡顿
     $script:pluginLoadJob = Start-BackgroundOperation -ScriptBlock {
-        param($PowerShellPath, $ManagerScriptPath, $HarnessPath)
-        $output = & $PowerShellPath -NoProfile -ExecutionPolicy Bypass -File $ManagerScriptPath `
-            -Action list -HarnessPath $HarnessPath 2>&1 | ForEach-Object { $_.ToString() }
-        if ($LASTEXITCODE -ne 0) {
-            throw (($output | Select-Object -Last 8) -join [Environment]::NewLine)
-        }
-        $output
-    } -ArgumentList 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', $script:pluginManagerScript, $repoPath
+        param($ManagerScriptPath, $HarnessPath)
+        # The list action is read-only and safe to run in the existing pool. Avoiding a
+        # second powershell.exe removes most of the first-open latency.
+        & $ManagerScriptPath -Action list -HarnessPath $HarnessPath 2>&1 |
+            ForEach-Object { $_.ToString() }
+    } -ArgumentList $script:pluginManagerScript, $repoPath
 }
 
 function Start-PluginManagerAction {
@@ -1353,7 +1219,7 @@ function Show-PluginManager {
     $whale.Height = 26
     $whale.Stretch = 'Uniform'
     [Windows.Media.RenderOptions]::SetBitmapScalingMode($whale, [Windows.Media.BitmapScalingMode]::HighQuality)
-    $whalePath = Join-Path $launcherRoot 'assets\DSHarness-v2.png'
+    $whalePath = Join-Path $launcherRoot 'assets\DSHarness-v2-display.png'
     if (Test-Path -LiteralPath $whalePath) {
         try { $whale.Source = New-OptimizedBitmapImage -Path $whalePath -DecodePixelWidth 64 } catch { }
     }
@@ -1528,6 +1394,10 @@ function Show-PluginManager {
 
     $script:pluginManagerDialogList = $list
     $script:pluginManagerDialogStatus = $status
+    if (@($script:pluginListData).Count -gt 0) {
+        $list.ItemsSource = $script:pluginListData
+        $status.Text = "已显示缓存的 $(@($script:pluginListData).Count) 个插件，正在刷新…"
+    }
     $dialog.Add_ContentRendered({ Refresh-PluginList })
     $dialog.Add_Closed({
         $script:pluginManagerDialogList = $null
@@ -1560,9 +1430,87 @@ function Start-TerminalCommand {
     } -ArgumentList $repoPath, $CommandText
 }
 
+function Start-InitialLogLoad {
+    if ($null -ne $script:startupLogJob) { return }
+    $script:startupLogJob = Start-BackgroundOperation -ScriptBlock {
+        param($LauncherLogPath, $WebLogPath)
+
+        $displayLines = New-Object System.Collections.Generic.List[object]
+        $launcherOffset = 0L
+        $webOffset = 0L
+
+        if (Test-Path -LiteralPath $LauncherLogPath) {
+            try {
+                $lines = @(Get-Content -LiteralPath $LauncherLogPath -Tail 400 -Encoding UTF8 -ErrorAction Stop)
+                $lastRunStart = -1
+                for ($index = 0; $index -lt $lines.Count; $index++) {
+                    if ($lines[$index] -match '^\[\d{4}-\d{2}-\d{2} .+\] (Checking the official Harness repository|Local Harness was not found)') {
+                        $lastRunStart = $index
+                    }
+                }
+                if ($lastRunStart -ge 0) { $lines = @($lines[$lastRunStart..($lines.Count - 1)]) }
+                elseif ($lines.Count -gt 80) { $lines = @($lines[($lines.Count - 80)..($lines.Count - 1)]) }
+                $displayLines.Add('[DSH] Recent launcher/update output:')
+                foreach ($line in $lines) { $displayLines.Add(($line -replace '\x1B\[[0-?]*[ -/]*[@-~]', '')) }
+                $launcherOffset = (Get-Item -LiteralPath $LauncherLogPath).Length
+            } catch { }
+        }
+
+        if (Test-Path -LiteralPath $WebLogPath) {
+            try {
+                $lines = @(Get-Content -LiteralPath $WebLogPath -Tail 250 -Encoding UTF8 -ErrorAction Stop)
+                $lastRunStart = -1
+                for ($index = 0; $index -lt $lines.Count; $index++) {
+                    if ($lines[$index] -match '^\$ node .*"web"') { $lastRunStart = $index }
+                }
+                if ($lastRunStart -ge 0) { $lines = @($lines[$lastRunStart..($lines.Count - 1)]) }
+                elseif ($lines.Count -gt 60) { $lines = @($lines[($lines.Count - 60)..($lines.Count - 1)]) }
+                $displayLines.Add('[DSH] Current Harness runtime output:')
+                foreach ($line in $lines) { $displayLines.Add(($line -replace '\x1B\[[0-?]*[ -/]*[@-~]', '')) }
+                $webOffset = (Get-Item -LiteralPath $WebLogPath).Length
+            } catch { }
+        }
+
+        [pscustomobject]@{
+            Lines = $displayLines.ToArray()
+            LauncherOffset = $launcherOffset
+            WebOffset = $webOffset
+        }
+    } -ArgumentList $launcherLogPath, $webLogPath
+}
+
 $jobTimer = New-Object Windows.Threading.DispatcherTimer
 $jobTimer.Interval = [TimeSpan]::FromMilliseconds(220)
 $jobTimer.Add_Tick({
+    if ($null -ne $script:serviceProbeTask -and $script:serviceProbeTask.IsCompleted) {
+        $running = -not $script:serviceProbeTask.IsFaulted -and
+            -not $script:serviceProbeTask.IsCanceled -and
+            $script:serviceProbeTask.Result
+        $script:serviceProbeTask = $null
+        if ($running -ne $script:isWebRunning -and $null -eq $script:activeJob) {
+            Set-ServiceState $running
+            if ($running) {
+                Set-LauncherBusy $false '服务运行中' '检测到 WebUI 正在本地端口 3080 运行'
+            } else {
+                Set-LauncherBusy $false '服务已停止' '本地端口 3080 当前处于空闲状态'
+            }
+        }
+    }
+    if ($null -ne $script:startupLogJob) {
+        $logLoadState = $script:startupLogJob.Shell.InvocationStateInfo.State.ToString()
+        if ($logLoadState -in @('Completed', 'Failed', 'Stopped')) {
+            $logLoadResult = Complete-BackgroundOperation -Operation $script:startupLogJob
+            $script:startupLogJob = $null
+            if ($logLoadResult.State -eq 'Completed') {
+                $logPayload = @($logLoadResult.Output | Select-Object -Last 1)[0]
+                if ($null -ne $logPayload) {
+                    Append-TerminalLines -Lines @($logPayload.Lines)
+                    $script:launcherLogOffset = [long]$logPayload.LauncherOffset
+                    $script:webLogOffset = [long]$logPayload.WebOffset
+                }
+            }
+        }
+    }
     if ($null -ne $script:pluginLoadJob) {
         $pluginLoadState = $script:pluginLoadJob.Shell.InvocationStateInfo.State.ToString()
         if ($pluginLoadState -in @('Completed', 'Failed', 'Stopped')) {
@@ -1576,6 +1524,12 @@ $jobTimer.Add_Tick({
                     $json = ($pluginLoadOutput | Where-Object { $_ -is [string] }) -join ''
                     if ([string]::IsNullOrWhiteSpace($json)) { throw '空插件列表' }
                     $script:pluginListData = @($json | ConvertFrom-Json | ForEach-Object { $_ })
+                    try {
+                        [IO.File]::WriteAllText(
+                            $script:pluginCachePath,
+                            ($script:pluginListData | ConvertTo-Json -Depth 8),
+                            (New-Object Text.UTF8Encoding($false)))
+                    } catch { }
                     if ($null -ne $script:pluginManagerDialogList) {
                         $script:pluginManagerDialogList.ItemsSource = $script:pluginListData
                     }
@@ -1602,14 +1556,18 @@ $jobTimer.Add_Tick({
     if ($null -eq $script:activeJob) { return }
 
     $output = @(Receive-BackgroundOperation -Operation $script:activeJob)
-    Append-TerminalLines -Lines $output
+    if ($script:activeJobKind -ne 'update') {
+        Append-TerminalLines -Lines $output
+    }
 
     $operationState = $script:activeJob.Shell.InvocationStateInfo.State.ToString()
     if ($operationState -in @('Completed', 'Failed', 'Stopped')) {
         $result = Complete-BackgroundOperation -Operation $script:activeJob
         $state = $result.State
         $reason = $result.Reason
-        Append-TerminalLines -Lines $result.Output
+        if ($script:activeJobKind -ne 'update') {
+            Append-TerminalLines -Lines $result.Output
+        }
         $completedKind = $script:activeJobKind
         $script:activeJob = $null
         $script:activeJobKind = ''
@@ -1618,7 +1576,7 @@ $jobTimer.Add_Tick({
             switch ($completedKind) {
                 'update' {
                     Update-CommitLabel
-                    Set-ServiceState (Test-WebUiRunning)
+                    Start-ServiceProbe
                     if ($script:updateWasInstall) {
                         Set-LauncherBusy $false 'Harness 安装完成' "完整核心位于：$repoPath"
                     } else {
@@ -1653,28 +1611,28 @@ $jobTimer.Add_Tick({
                     Set-LauncherBusy $false '服务已重启' 'WebUI 正在本地端口 3080 运行'
                 }
                 'terminal' {
-                    Set-ServiceState (Test-WebUiRunning)
+                    Start-ServiceProbe
                     Set-LauncherBusy $false '终端命令已完成' '可继续输入命令或启动 WebUI'
                 }
                 'plugin-toggle' {
-                    Set-ServiceState (Test-WebUiRunning)
+                    Start-ServiceProbe
                     Set-LauncherBusy $false '插件状态已更新' 'Web 插件启停已生效'
                     Refresh-PluginList
                 }
                 'plugin-update' {
-                    Set-ServiceState (Test-WebUiRunning)
+                    Start-ServiceProbe
                     Set-LauncherBusy $false '插件已更新' '已更新所选 Web 插件'
                     Refresh-PluginList
                 }
                 'diagnostics' {
-                    Set-ServiceState (Test-WebUiRunning)
+                    Start-ServiceProbe
                     Set-LauncherBusy $false '系统诊断完成' "报告已保存到：$stateRoot\diagnostics-latest.json"
                 }
             }
         } else {
             $message = if ($null -ne $reason) { $reason.Message } else { 'The background task failed.' }
             Append-TerminalLine ("[ERROR] " + $message)
-            Set-ServiceState (Test-WebUiRunning)
+            Start-ServiceProbe
             Set-LauncherBusy $false '操作没有完成' '打开终端查看详细信息后可以重试'
             $statusDot.Background = '#FF6B72'
             $serviceStateLabel.Text = '需要处理'
@@ -1687,21 +1645,16 @@ $jobTimer.Add_Tick({
 
 $webLogTimer = New-Object Windows.Threading.DispatcherTimer
 $webLogTimer.Interval = [TimeSpan]::FromSeconds(1)
-$webLogTimer.Add_Tick({ Read-WebLogDelta })
+$webLogTimer.Add_Tick({
+    Read-LauncherLogDelta
+    Read-WebLogDelta
+})
 
 $serviceStateTimer = New-Object Windows.Threading.DispatcherTimer
 $serviceStateTimer.Interval = [TimeSpan]::FromSeconds(5)
 $serviceStateTimer.Add_Tick({
     if ($null -ne $script:activeJob) { return }
-    $running = Test-WebUiRunning
-    if ($running -eq $script:isWebRunning) { return }
-
-    Set-ServiceState $running
-    if ($running) {
-        Set-LauncherBusy $false '服务运行中' '检测到 WebUI 正在本地端口 3080 运行'
-    } else {
-        Set-LauncherBusy $false '服务已停止' '本地端口 3080 当前处于空闲状态'
-    }
+    Start-ServiceProbe
 })
 
 $dragArea.Add_MouseLeftButtonDown({
@@ -1770,19 +1723,14 @@ $window.Add_ContentRendered({
     Append-TerminalLine 'DSH Whale Maid Launcher'
     Append-TerminalLine 'Repository: https://github.com/deepseek-ai/deepseek-harness'
     Append-TerminalLine ("Harness path: " + $repoPath)
-    Initialize-WebLogView
+    Start-InitialLogLoad
     if (-not (Test-HarnessInstallation $repoPath)) {
         Set-ServiceState $false
         # 仅当 Harness 尚未安装时自动执行首次安装；已安装则跳过启动时的更新检查
         Start-UpdateCheck
     } else {
-        $running = Test-WebUiRunning
-        Set-ServiceState $running
-        if ($running) {
-            Set-LauncherBusy $false '服务运行中' 'WebUI 已在本地端口 3080 运行'
-        } else {
-            Set-LauncherBusy $false '已就绪' '点击主按钮即可启动 WebUI'
-        }
+        Start-ServiceProbe
+        Set-LauncherBusy $false '已就绪' '点击主按钮即可启动 WebUI'
     }
 })
 $window.Add_Closing({
@@ -1800,6 +1748,9 @@ $window.Add_Closed({
     }
     if ($null -ne $script:pluginLoadJob) {
         Stop-BackgroundOperation -Operation $script:pluginLoadJob
+    }
+    if ($null -ne $script:startupLogJob) {
+        Stop-BackgroundOperation -Operation $script:startupLogJob
     }
     if ($null -ne $script:backgroundRunspacePool) {
         $script:backgroundRunspacePool.Close()

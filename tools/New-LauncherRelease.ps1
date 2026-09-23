@@ -73,13 +73,15 @@ $payload = @(
     'DSH-PluginUpdater.ps1'
     'DSH-PluginCompatibility.ps1'
     'DSH-UI.ps1'
+    'DSH-Launcher.Runtime.dll'
+    'DSH-Launcher.Xaml.dll'
     'LauncherWindow.xaml'
     'Start-DSH-Web.cmd'
     'launcher-manifest.json'
     'DSH-unified-v5.ico'
     'README.md'
-    'assets\DSH-white-frame-v5.png'
-    'assets\DSHarness-v2.png'
+    'assets\DSH-office-maid-display.jpg'
+    'assets\DSHarness-v2-display.png'
 )
 
 $missing = @($payload | Where-Object { -not (Test-Path -LiteralPath (Join-Path $launcherRoot $_)) })

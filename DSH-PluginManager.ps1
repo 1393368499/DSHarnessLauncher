@@ -44,25 +44,50 @@ function Invoke-DshCommand {
 }
 
 function Get-PluginInventory {
-    $dump = Invoke-DshCommand @('dsh', '--profile', $ProfileName, '--dump-config')
     $entriesByBundle = @{}
-    $currentBundle = $null
-    $currentEntry = $null
-    foreach ($line in $dump) {
-        if ($line -match '^# == (?<bundle>[^,]+)(?:,.*)?$') {
-            $currentBundle = $Matches.bundle.Trim()
-            $currentEntry = $null
-            continue
+    $usedLiveInventory = $false
+    try {
+        $live = Invoke-RestMethod -Uri 'http://127.0.0.1:3080/plugin-switch/list' -Method Get -TimeoutSec 2
+        if ($live.ok -ne $true -or $null -eq $live.value -or $null -eq $live.value.entries) {
+            throw 'The live plugin inventory returned an invalid response.'
         }
-        if ($null -eq $currentBundle -or -not $bundleSet.ContainsKey($currentBundle)) { continue }
-        if ($line -match '^- id:\s*(?<id>.+?)\s*$') {
-            $currentEntry = [pscustomobject]@{ Id = $Matches.id.Trim(' ', "'", '"'); Disabled = $false }
-            if (-not $entriesByBundle.ContainsKey($currentBundle)) { $entriesByBundle[$currentBundle] = [System.Collections.ArrayList]::new() }
-            [void]$entriesByBundle[$currentBundle].Add($currentEntry)
-            continue
+        foreach ($bundleName in $bundleNames) {
+            $liveEntries = @($live.value.entries | Where-Object {
+                $moduleName = [string]$_.moduleName
+                $moduleName -eq $bundleName -or $moduleName.StartsWith($bundleName + '/', [StringComparison]::Ordinal)
+            })
+            if ($liveEntries.Count -eq 0) { continue }
+            $entriesByBundle[$bundleName] = [System.Collections.ArrayList]::new()
+            foreach ($entry in $liveEntries) {
+                [void]$entriesByBundle[$bundleName].Add([pscustomobject]@{
+                    Id = [string]$entry.entryId
+                    Disabled = $entry.enabled -ne $true
+                })
+            }
         }
-        if ($null -ne $currentEntry -and $line -match '^  disabled:\s*(?<value>true|false)\s*$') {
-            $currentEntry.Disabled = $Matches.value -eq 'true'
+        $usedLiveInventory = $true
+    } catch { }
+
+    if (-not $usedLiveInventory) {
+        $dump = Invoke-DshCommand @('dsh', '--profile', $ProfileName, '--dump-config')
+        $currentBundle = $null
+        $currentEntry = $null
+        foreach ($line in $dump) {
+            if ($line -match '^# == (?<bundle>[^,]+)(?:,.*)?$') {
+                $currentBundle = $Matches.bundle.Trim()
+                $currentEntry = $null
+                continue
+            }
+            if ($null -eq $currentBundle -or -not $bundleSet.ContainsKey($currentBundle)) { continue }
+            if ($line -match '^- id:\s*(?<id>.+?)\s*$') {
+                $currentEntry = [pscustomobject]@{ Id = $Matches.id.Trim(' ', "'", '"'); Disabled = $false }
+                if (-not $entriesByBundle.ContainsKey($currentBundle)) { $entriesByBundle[$currentBundle] = [System.Collections.ArrayList]::new() }
+                [void]$entriesByBundle[$currentBundle].Add($currentEntry)
+                continue
+            }
+            if ($null -ne $currentEntry -and $line -match '^  disabled:\s*(?<value>true|false)\s*$') {
+                $currentEntry.Disabled = $Matches.value -eq 'true'
+            }
         }
     }
 
@@ -101,7 +126,7 @@ function Get-PluginInventory {
 
 if ($Action -eq 'list') {
     @(Get-PluginInventory) | ConvertTo-Json -Depth 5
-    exit 0
+    return
 }
 
 if ([string]::IsNullOrWhiteSpace($Name)) { throw "Plugin name is required for action '$Action'." }
@@ -130,7 +155,7 @@ if ($Action -eq 'update') {
         if ($LASTEXITCODE -ne 0) { throw "Plugin compatibility helper failed with exit code $LASTEXITCODE." }
     }
     Write-Output "[DSH][PluginManager][OK] Checked stable and compatible preview channels for $Name. Restart WebUI if the plugin does not hot-reload."
-    exit 0
+    return
 }
 
 $inventory = @(Get-PluginInventory)
@@ -154,7 +179,8 @@ try {
     $backupPath = Join-Path $backupRoot ("launcher-plugin-manager-{0}.yml" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
     Copy-Item -LiteralPath $patchPath -Destination $backupPath
     foreach ($entryId in @($item.EntryIds)) {
-        & node.exe $switchTool $Action ([string]$entryId) *> $null
+        $offlineEntryId = ([string]$entryId -split ':')[-1]
+        & node.exe $switchTool $Action $offlineEntryId *> $null
         if ($LASTEXITCODE -ne 0) { throw "Failed to $Action plugin entry '$entryId'. Backup: $backupPath" }
     }
 }
