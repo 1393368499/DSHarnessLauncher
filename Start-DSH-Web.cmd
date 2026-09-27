@@ -4,6 +4,7 @@ set "DSH_REPO=%~1"
 if not defined DSH_REPO exit /b 2
 if not exist "%DSH_REPO%\package.json" exit /b 3
 cd /d "%DSH_REPO%" || exit /b 4
+if exist "%LOCALAPPDATA%\DSH\tools\active-path.cmd" call "%LOCALAPPDATA%\DSH\tools\active-path.cmd"
 rem GitHub requests started by Harness follow the machine's configured network
 rem path: Git's http.proxy, or HTTP(S)_PROXY. Set DSH_GITHUB_DIRECT=1 only to
 rem force direct access, for a machine whose loopback proxy client has exited

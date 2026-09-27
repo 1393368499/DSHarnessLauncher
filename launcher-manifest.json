@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "2.1.0",
+  "version": "2.1.1",
   "core": {
     "packageName": "@deepseek-ai/dsh-root",
     "minimumVersion": "0.1.2-alpha.2",
@@ -12,8 +12,11 @@
       "DSH.exe",
       "DSH-Launcher.ps1",
       "DSH-CoreCompatibility.ps1",
+      "DSH-CoreCleanCompatibility.ps1",
       "DSH-LauncherCompatibility.ps1",
       "DSH-LauncherUpdater.ps1",
+      "DSH-ApplyLauncherUpdate.ps1",
+      "DSH-Bootstrap.ps1",
       "DSH-PluginManager.ps1",
       "DSH-PluginUpdater.ps1",
       "DSH-PluginCompatibility.ps1",
@@ -29,6 +32,6 @@
     ]
   },
   "update": {
-    "manifestSources": []
+    "manifestSources": ["https://raw.githubusercontent.com/1393368499/DSHarnessLauncher/main/launcher-update.json"]
   }
 }

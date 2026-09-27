@@ -1,6 +1,7 @@
 param(
     [switch]$CheckOnly,
-    [string]$HarnessPath
+    [string]$HarnessPath,
+    [int]$LauncherProcessId = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,8 +13,10 @@ $HarnessPath = [System.IO.Path]::GetFullPath($HarnessPath)
 $repoUrl = 'https://github.com/deepseek-ai/deepseek-harness.git'
 $serverScript = Join-Path $launcherRoot 'Start-DSH-Web.cmd'
 $coreCompatibilityScript = Join-Path $launcherRoot 'DSH-CoreCompatibility.ps1'
+$coreCleanCompatibilityScript = Join-Path $launcherRoot 'DSH-CoreCleanCompatibility.ps1'
 $pluginUpdaterScript = Join-Path $launcherRoot 'DSH-PluginUpdater.ps1'
 $pluginCompatibilityScript = Join-Path $launcherRoot 'DSH-PluginCompatibility.ps1'
+$bootstrapScript = Join-Path $launcherRoot 'DSH-Bootstrap.ps1'
 $launcherLogRoot = Join-Path $env:LOCALAPPDATA 'DSH\logs'
 $launcherLog = Join-Path $launcherLogRoot 'launcher.log'
 $launcherStateRoot = Join-Path $env:LOCALAPPDATA 'DSH'
@@ -123,7 +126,21 @@ function Write-LauncherStatus {
 
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     Write-Host "[$timestamp] $Message" -ForegroundColor $Color
-    Add-Content -LiteralPath $launcherLog -Value "[$timestamp] $Message" -Encoding UTF8
+    Write-LauncherLogLine "[$timestamp] $Message"
+}
+
+function Write-LauncherLogLine {
+    param([Parameter(Mandatory)][string]$Line)
+    for ($attempt = 0; $attempt -lt 6; $attempt++) {
+        try {
+            Add-Content -LiteralPath $script:launcherLog -Value $Line -Encoding UTF8 -ErrorAction Stop
+            return
+        } catch {
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    # The terminal still receives the line when another process temporarily
+    # holds the log file open; logging must never interrupt an update.
 }
 
 function Resolve-RequiredCommand {
@@ -177,7 +194,7 @@ function Invoke-CheckedCommand {
         & $FilePath @Arguments 2>&1 | ForEach-Object {
             $line = ConvertTo-CommandOutputLine $_
             Write-Host $line
-            Add-Content -LiteralPath $launcherLog -Value $line -Encoding UTF8
+            Write-LauncherLogLine $line
         }
         $commandExitCode = $LASTEXITCODE
     } finally {
@@ -190,16 +207,17 @@ function Invoke-CheckedCommand {
 }
 
 function Invoke-CoreCompatibility {
-    param([Parameter(Mandatory)][ValidateSet('Apply', 'Remove', 'Status')][string]$Action)
+    param([Parameter(Mandatory)][ValidateSet('Apply', 'Remove', 'Status')][string]$Action,
+          [string]$ScriptPath = $script:coreCompatibilityScript)
 
-    if (-not (Test-Path -LiteralPath $script:coreCompatibilityScript)) {
-        throw "Core compatibility helper was not found: $script:coreCompatibilityScript"
+    if (-not (Test-Path -LiteralPath $ScriptPath)) {
+        throw "Core compatibility helper was not found: $ScriptPath"
     }
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
         $output = @(& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
-            -NoProfile -ExecutionPolicy Bypass -File $script:coreCompatibilityScript `
+            -NoProfile -ExecutionPolicy Bypass -File $ScriptPath `
             -HarnessPath $script:HarnessPath -Action $Action 2>&1 | ForEach-Object { ConvertTo-CommandOutputLine $_ })
         $exitCode = $LASTEXITCODE
     } finally {
@@ -208,7 +226,7 @@ function Invoke-CoreCompatibility {
     foreach ($line in $output) {
         if (-not [string]::IsNullOrWhiteSpace($line)) {
             Write-Host $line
-            Add-Content -LiteralPath $script:launcherLog -Value $line -Encoding UTF8
+            Write-LauncherLogLine $line
         }
     }
     if ($exitCode -ne 0) { throw "Core compatibility action '$Action' failed (exit code: $exitCode)." }
@@ -236,7 +254,8 @@ function Get-HarnessBuildIdentity {
     if (-not (Test-Path -LiteralPath $compatibilityTarget)) {
         throw "Harness compatibility target was not found: $compatibilityTarget"
     }
-    return "$Commit|$(Get-FileSha256 -Path $compatibilityTarget)"
+    $cleanTarget = Join-Path $script:HarnessPath 'scripts\clean.ts'
+    return "$Commit|$(Get-FileSha256 -Path $compatibilityTarget)|$(Get-FileSha256 -Path $cleanTarget)"
 }
 
 function Initialize-NativeBuildEnvironment {
@@ -279,11 +298,14 @@ function Initialize-NativeBuildEnvironment {
 
 try {
     Save-UpdateResult
+    if (-not (Test-Path -LiteralPath $bootstrapScript)) { throw "Bootstrap helper was not found: $bootstrapScript" }
+    & $bootstrapScript -HarnessPath $HarnessPath -GitOnly
     $gitPath = Resolve-RequiredCommand 'git.exe'
-    $pnpmPath = Resolve-RequiredCommand 'pnpm.cmd'
     $freshInstall = $false
 
-    if (-not (Test-Path -LiteralPath $HarnessPath)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $HarnessPath '.git')) -and
+        ((-not (Test-Path -LiteralPath $HarnessPath)) -or
+         @(Get-ChildItem -LiteralPath $HarnessPath -Force -ErrorAction SilentlyContinue).Count -eq 0)) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $HarnessPath) | Out-Null
         Write-LauncherStatus 'Local Harness was not found. Cloning the official repository.' Cyan
         Invoke-CheckedCommand -FilePath $gitPath -Arguments @('clone', $repoUrl, $HarnessPath) -FailureMessage 'Failed to clone the official Harness repository'
@@ -293,6 +315,9 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $HarnessPath '.git'))) {
         throw "The directory is not a valid Git repository: $HarnessPath"
     }
+
+    & $bootstrapScript -HarnessPath $HarnessPath -SkipNative
+    $pnpmPath = Resolve-RequiredCommand 'pnpm.cmd'
 
     Set-Location -LiteralPath $HarnessPath
 
@@ -392,6 +417,7 @@ try {
                 # user changes remain protected by the normal dirty-worktree check below.
                 [void](Invoke-CoreCompatibility -Action Remove)
                 $coreCompatibilityNeedsRestore = $true
+                [void](Invoke-CoreCompatibility -Action Remove -ScriptPath $coreCleanCompatibilityScript)
                 $trackedChanges = @(& $gitPath -C $HarnessPath status --porcelain --untracked-files=no)
                 & $gitPath -C $HarnessPath merge-base --is-ancestor HEAD $remoteRef
                 $canFastForward = $LASTEXITCODE -eq 0
@@ -423,6 +449,7 @@ try {
         Stop-WebServiceForCoreUpdate
     }
     [void](Invoke-CoreCompatibility -Action Apply)
+    [void](Invoke-CoreCompatibility -Action Apply -ScriptPath $coreCleanCompatibilityScript)
     $coreCompatibilityNeedsRestore = $false
 
     $lockHashAfter = if (Test-Path -LiteralPath $lockFile) {
@@ -446,6 +473,8 @@ try {
     $buildCommitMarker = Join-Path $HarnessPath '.git\dsh-launcher-build-commit'
     try {
         if ($nodeModulesMissing -or $dependenciesChanged -or $installedIdentity -ne $dependencyIdentity) {
+            & $bootstrapScript -HarnessPath $HarnessPath
+            Initialize-NativeBuildEnvironment
             $reason = if ($nodeModulesMissing) { 'Dependencies are not installed' } elseif ($dependenciesChanged) { 'The dependency lock file changed' } else { 'Dependency installation has not been verified for this lockfile and Node.js version' }
             Write-LauncherStatus "$reason. Synchronizing dependencies..." Cyan
             Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('install', '--frozen-lockfile') -FailureMessage 'Failed to install Harness dependencies'
@@ -491,6 +520,7 @@ try {
             Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('install', '--frozen-lockfile') -FailureMessage 'Failed to restore the previous Harness dependencies'
             Set-Content -LiteralPath $dependencyMarker -Value $restoredDependencyIdentity -Encoding UTF8
             [void](Invoke-CoreCompatibility -Action Apply)
+            [void](Invoke-CoreCompatibility -Action Apply -ScriptPath $coreCleanCompatibilityScript)
             $coreCompatibilityNeedsRestore = $false
             $restoredBuildIdentity = Get-HarnessBuildIdentity -Commit $localBefore
             Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('run', 'clean') -FailureMessage 'Failed to clean artifacts while restoring the previous Harness core'
@@ -590,7 +620,7 @@ try {
             Write-LauncherStatus 'Checking launcher update channel...' Cyan
             try {
                 Invoke-CheckedCommand -FilePath 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
-                    -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherUpdater, '-HarnessPath', $HarnessPath, '-LauncherRoot', $launcherRoot) `
+                    -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $launcherUpdater, '-HarnessPath', $HarnessPath, '-LauncherRoot', $launcherRoot, '-WaitForProcessId', [string]$LauncherProcessId) `
                     -FailureMessage 'Launcher update check failed'
             } catch {
                 Add-UpdateWarning ("Launcher update check failed; this does not invalidate the core update. " + $_.Exception.Message)
@@ -649,6 +679,7 @@ try {
     if ($coreCompatibilityNeedsRestore) {
         try {
             [void](Invoke-CoreCompatibility -Action Apply)
+            [void](Invoke-CoreCompatibility -Action Apply -ScriptPath $coreCleanCompatibilityScript)
             $coreCompatibilityNeedsRestore = $false
         } catch {
             [void]$updateWarnings.Add("The managed core compatibility patch could not be restored: $($_.Exception.Message)")
@@ -672,7 +703,10 @@ try {
     exit 1
 } finally {
     if ($coreCompatibilityNeedsRestore) {
-        try { [void](Invoke-CoreCompatibility -Action Apply) } catch { }
+        try {
+            [void](Invoke-CoreCompatibility -Action Apply)
+            [void](Invoke-CoreCompatibility -Action Apply -ScriptPath $coreCleanCompatibilityScript)
+        } catch { }
     }
     foreach ($name in $buildEnvironmentBefore.Keys) {
         [Environment]::SetEnvironmentVariable($name, $buildEnvironmentBefore[$name], 'Process')

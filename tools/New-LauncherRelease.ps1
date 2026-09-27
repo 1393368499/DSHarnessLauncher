@@ -66,8 +66,11 @@ $payload = @(
     'DSH.exe'
     'DSH-Launcher.ps1'
     'DSH-CoreCompatibility.ps1'
+    'DSH-CoreCleanCompatibility.ps1'
     'DSH-LauncherCompatibility.ps1'
     'DSH-LauncherUpdater.ps1'
+    'DSH-ApplyLauncherUpdate.ps1'
+    'DSH-Bootstrap.ps1'
     'DSH-Diagnostics.ps1'
     'DSH-PluginManager.ps1'
     'DSH-PluginUpdater.ps1'
@@ -153,6 +156,20 @@ $archive = Get-Item -LiteralPath $archivePath
 $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
 $rootCopy = Join-Path $launcherRoot $archive.Name
 if (-not $NoRootCopy) { Copy-Item -LiteralPath $archivePath -Destination $rootCopy -Force }
+
+# Publish the feed beside the ZIP so portable installations have a built-in
+# update channel after this release is committed to the default branch.
+$feed = [ordered]@{
+    schemaVersion = 1
+    version = $Version
+    packageUrl = $archive.Name
+    sha256 = $hash.ToLowerInvariant()
+    packageSize = $archive.Length
+}
+$feedJson = $feed | ConvertTo-Json
+$feedPath = Join-Path $outputRoot 'launcher-update.json'
+[IO.File]::WriteAllText($feedPath, $feedJson + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
+if (-not $NoRootCopy) { Copy-Item -LiteralPath $feedPath -Destination (Join-Path $launcherRoot 'launcher-update.json') -Force }
 
 Write-Host ''
 Write-Host "package   : $packageName" -ForegroundColor Cyan

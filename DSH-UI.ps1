@@ -111,6 +111,27 @@ function Resolve-HarnessPath {
         }
     }
 
+    # First launch is unattended. Reuse a saved empty destination, or install
+    # beside the launcher; keep nonempty unrelated directories untouched.
+    $installCandidates = @((Get-SavedHarnessPath), $defaultHarnessPath,
+        (Join-Path $stateRoot 'deepseek-harness')) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    foreach ($candidate in $installCandidates) {
+        $target = [System.IO.Path]::GetFullPath($candidate)
+        if (Test-Path -LiteralPath $target) {
+            if (@(Get-ChildItem -LiteralPath $target -Force -ErrorAction SilentlyContinue).Count -gt 0) { continue }
+        }
+        try {
+            $parent = Split-Path -Parent $target
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            $probe = Join-Path $parent ('.dsh-write-' + [guid]::NewGuid().ToString('N'))
+            [IO.File]::WriteAllText($probe, '')
+            Remove-Item -LiteralPath $probe -Force
+            Save-HarnessPath $target
+            return $target
+        } catch { continue }
+    }
+
     while ($true) {
         $picker = New-Object System.Windows.Forms.FolderBrowserDialog
         $picker.Description = "未检测到 DeepSeek Harness。请选择安装目录；启动器会在所选位置创建 deepseek-harness 文件夹。"
@@ -733,14 +754,14 @@ function Start-UpdateCheck {
     $script:updateWasInstall = $installing
     $script:activeJobKind = 'update'
     $script:activeJob = Start-BackgroundOperation -ScriptBlock {
-        param($PowerShellPath, $UpdateScriptPath, $HarnessPath)
+        param($PowerShellPath, $UpdateScriptPath, $HarnessPath, $LauncherProcessId)
         & $PowerShellPath -NoProfile -ExecutionPolicy Bypass -File $UpdateScriptPath `
-            -CheckOnly -HarnessPath $HarnessPath 2>&1 |
+            -CheckOnly -HarnessPath $HarnessPath -LauncherProcessId $LauncherProcessId 2>&1 |
             ForEach-Object { $_.ToString() }
         if ($LASTEXITCODE -ne 0) {
             throw "Update helper exited with code $LASTEXITCODE"
         }
-    } -ArgumentList 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', $updateScript, $repoPath
+    } -ArgumentList 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', $updateScript, $repoPath, $PID
 }
 
 function Start-SystemDiagnostics {
@@ -1594,6 +1615,11 @@ $jobTimer.Add_Tick({
                         }
                     }
                     $script:updateWasInstall = $false
+                    if (Test-Path -LiteralPath (Join-Path $stateRoot 'pending-launcher-update.json')) {
+                        Append-TerminalLine '[DSH] Closing the launcher to finish its update; it will reopen automatically.'
+                        $script:allowExit = $true
+                        $window.Close()
+                    }
                 }
                 'web' {
                     Set-ServiceState $true
@@ -1635,6 +1661,11 @@ $jobTimer.Add_Tick({
             Start-ServiceProbe
             Set-LauncherBusy $false '操作没有完成' '打开终端查看详细信息后可以重试'
             $statusDot.Background = '#FF6B72'
+            if ($completedKind -eq 'update' -and
+                (Test-Path -LiteralPath (Join-Path $stateRoot 'pending-launcher-update.json'))) {
+                $script:allowExit = $true
+                $window.Close()
+            }
             $serviceStateLabel.Text = '需要处理'
             $serviceStateLabel.Foreground = '#B42318'
             $terminalPanel.Visibility = 'Visible'

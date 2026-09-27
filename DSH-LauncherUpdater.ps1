@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory)][string]$HarnessPath,
     [string]$LauncherRoot = $PSScriptRoot,
     [string[]]$PortableManifestSources,
+    [int]$WaitForProcessId = 0,
     [switch]$NoApply
 )
 
@@ -42,6 +43,32 @@ function Resolve-PortablePackageSource {
     $manifestFile = [Environment]::ExpandEnvironmentVariables($ManifestSource)
     if (-not [System.IO.Path]::IsPathRooted($manifestFile)) { $manifestFile = Join-Path $LauncherRoot $manifestFile }
     return Join-Path (Split-Path -Parent $manifestFile) $PackageSource
+}
+
+function Start-DeferredLauncherUpdate {
+    param([string]$Mode, [string]$ExpectedCommit = '', [string]$PackageRoot = '', [string]$OperationRoot = '', [string]$GitPath = '')
+    $stateRoot = Join-Path $env:LOCALAPPDATA 'DSH'
+    New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
+    $helper = Join-Path $LauncherRoot 'DSH-ApplyLauncherUpdate.ps1'
+    if (-not (Test-Path -LiteralPath $helper)) { throw "Launcher update helper is missing: $helper" }
+    $helperCopy = Join-Path $stateRoot ('apply-launcher-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    Copy-Item -LiteralPath $helper -Destination $helperCopy
+    $pendingPath = Join-Path $stateRoot 'pending-launcher-update.json'
+    @{ mode = $Mode; createdAt = (Get-Date).ToString('o') } | ConvertTo-Json |
+        Set-Content -LiteralPath $pendingPath -Encoding UTF8
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $helperCopy +
+        '" -Mode ' + $Mode + ' -LauncherRoot "' + $LauncherRoot + '" -WaitForProcessId ' +
+        $WaitForProcessId + ' -GitPath "' + $GitPath + '" -ExpectedCommit "' +
+        $ExpectedCommit + '" -PackageRoot "' + $PackageRoot + '" -OperationRoot "' + $OperationRoot + '"'
+    try {
+        Start-Process -FilePath 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+            -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+    } catch {
+        Remove-Item -LiteralPath $pendingPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $helperCopy -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    Write-Output '[DSH][LauncherUpdate][PENDING] Launcher update is staged; the launcher will restart to apply it.'
 }
 
 function Invoke-PortableLauncherUpdate {
@@ -101,6 +128,7 @@ function Invoke-PortableLauncherUpdate {
     $extractPath = Join-Path $operationRoot 'package'
     $backupRoot = $null
     $appliedFiles = @()
+    $deferred = $false
     New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
     try {
         $packageSource = Resolve-PortablePackageSource $candidate.Source ([string]$candidate.Feed.packageUrl)
@@ -158,6 +186,11 @@ function Invoke-PortableLauncherUpdate {
         $compatibilityScript = Join-Path $packageRoot 'DSH-LauncherCompatibility.ps1'
         & 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -NoProfile -ExecutionPolicy Bypass -File $compatibilityScript -HarnessPath $HarnessPath -LauncherRoot $packageRoot
         if ($LASTEXITCODE -ne 0) { throw 'Portable launcher package failed compatibility validation.' }
+        if ($WaitForProcessId -gt 0) {
+            Start-DeferredLauncherUpdate -Mode Portable -PackageRoot $packageRoot -OperationRoot $operationRoot
+            $deferred = $true
+            return
+        }
         $backupRoot = Join-Path $env:LOCALAPPDATA ("DSH\launcher-backups\" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
         New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
         foreach ($relativeFile in $requiredFiles) {
@@ -190,14 +223,18 @@ function Invoke-PortableLauncherUpdate {
         }
         throw
     } finally {
-        if ($operationRoot.StartsWith([System.IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $operationRoot)) {
+        if (-not $deferred -and $operationRoot.StartsWith([System.IO.Path]::GetTempPath(), [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $operationRoot)) {
             Remove-Item -LiteralPath $operationRoot -Recurse -Force
         }
     }
 }
 
 $git = Get-Command 'git.exe' -ErrorAction SilentlyContinue
-if ($null -eq $git) { throw 'git.exe was not found for the launcher update check.' }
+if ($null -eq $git) {
+    $portableGit = Join-Path $env:LOCALAPPDATA 'DSH\tools\mingit-2.55.0.5\cmd\git.exe'
+    if (Test-Path -LiteralPath $portableGit) { $git = [pscustomobject]@{ Source = $portableGit } }
+}
+if ($null -eq $git) { Invoke-PortableLauncherUpdate; exit 0 }
 $repositoryRoot = $null
 $previousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
@@ -231,9 +268,21 @@ if ($trackedChanges.Count -gt 0) {
     exit 0
 }
 
-& $git.Source -c http.proxy= -c https.proxy= -C $repositoryRoot fetch --prune origin
-if ($LASTEXITCODE -ne 0) { & $git.Source -C $repositoryRoot fetch --prune origin }
-if ($LASTEXITCODE -ne 0) {
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & $git.Source -c http.proxy= -c https.proxy= -C $repositoryRoot fetch --prune origin 2>&1 |
+        ForEach-Object { Write-Output ([string]$_) }
+    $fetchExitCode = $LASTEXITCODE
+    if ($fetchExitCode -ne 0) {
+        & $git.Source -C $repositoryRoot fetch --prune origin 2>&1 |
+            ForEach-Object { Write-Output ([string]$_) }
+        $fetchExitCode = $LASTEXITCODE
+    }
+} finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
+if ($fetchExitCode -ne 0) {
     Write-Output '[DSH][LauncherUpdate][WARN] Launcher update source could not be reached; the installed launcher will be used.'
     exit 0
 }
@@ -260,6 +309,10 @@ if ($NoApply) {
     Write-Output "[DSH][LauncherUpdate][UPDATE] Compatible launcher update is available: $($localCommit.Substring(0, 8)) -> $($remoteCommit.Substring(0, 8))."
     exit 0
 }
-& $git.Source -C $repositoryRoot merge --ff-only $remoteRef
-if ($LASTEXITCODE -ne 0) { throw 'Failed to fast-forward the launcher repository.' }
-Write-Output "[DSH][LauncherUpdate][OK] Launcher updated: $($localCommit.Substring(0, 8)) -> $($remoteCommit.Substring(0, 8)). Restart the launcher to load its new UI code."
+if ($WaitForProcessId -gt 0) {
+    Start-DeferredLauncherUpdate -Mode Git -ExpectedCommit $remoteCommit -GitPath $git.Source
+} else {
+    & $git.Source -C $repositoryRoot merge --ff-only $remoteRef
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to fast-forward the launcher repository.' }
+    Write-Output "[DSH][LauncherUpdate][OK] Launcher updated: $($localCommit.Substring(0, 8)) -> $($remoteCommit.Substring(0, 8)). Restart the launcher to load its new UI code."
+}
