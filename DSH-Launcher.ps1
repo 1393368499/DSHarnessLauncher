@@ -130,7 +130,7 @@ function Write-LauncherStatus {
 }
 
 function Write-LauncherLogLine {
-    param([Parameter(Mandatory)][string]$Line)
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Line)
     for ($attempt = 0; $attempt -lt 6; $attempt++) {
         try {
             Add-Content -LiteralPath $script:launcherLog -Value $Line -Encoding UTF8 -ErrorAction Stop
