@@ -14,6 +14,7 @@ $repoUrl = 'https://github.com/deepseek-ai/deepseek-harness.git'
 $serverScript = Join-Path $launcherRoot 'Start-DSH-Web.cmd'
 $coreCompatibilityScript = Join-Path $launcherRoot 'DSH-CoreCompatibility.ps1'
 $coreCleanCompatibilityScript = Join-Path $launcherRoot 'DSH-CoreCleanCompatibility.ps1'
+$coreBlobPrefetchScript = Join-Path $launcherRoot 'DSH-CoreBlobPrefetch.ps1'
 $pluginUpdaterScript = Join-Path $launcherRoot 'DSH-PluginUpdater.ps1'
 $pluginCompatibilityScript = Join-Path $launcherRoot 'DSH-PluginCompatibility.ps1'
 $bootstrapScript = Join-Path $launcherRoot 'DSH-Bootstrap.ps1'
@@ -367,7 +368,6 @@ try {
         }
     )
     $fetchSucceeded = $false
-    $successfulFetchConfiguration = @('-c', 'http.version=HTTP/1.1')
     $fetchAttemptOutput = New-Object System.Collections.ArrayList
     $previousFetchErrorPreference = $ErrorActionPreference
     foreach ($route in $fetchRoutes) {
@@ -391,7 +391,6 @@ try {
         foreach ($line in $attemptOutput) { [void]$fetchAttemptOutput.Add($line) }
         if ($attemptExitCode -eq 0) {
             $fetchSucceeded = $true
-            $successfulFetchConfiguration = @($route.Configuration)
             break
         }
     }
@@ -430,12 +429,24 @@ try {
                     $updateResult.coreStatus = 'skipped-diverged'
                 } else {
                     Write-LauncherStatus "Update found: $($localBefore.Substring(0, 8)) -> $($remoteCommit.Substring(0, 8))" Cyan
+                    if (-not (Test-Path -LiteralPath $coreBlobPrefetchScript)) {
+                        throw "Core download helper was not found: $coreBlobPrefetchScript"
+                    }
+                    Write-LauncherStatus 'Downloading the target core files before changing the running installation...' Cyan
+                    Invoke-CheckedCommand -FilePath 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `
+                        -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $coreBlobPrefetchScript,
+                            '-HarnessPath', $HarnessPath, '-Ref', $remoteRef, '-GitPath', $gitPath) `
+                        -FailureMessage 'Failed to download all target Harness files'
                     Stop-WebServiceForCoreUpdate
-                    # Fetch already downloaded and verified origin/$branch. Fast-forward locally so a
-                    # broken configured proxy cannot make a second, redundant network request fail.
-                    # Preserve the route that completed the filtered fetch. A partial fetch may
-                    # retrieve a small number of changed blobs lazily while updating the worktree.
-                    Invoke-CheckedCommand -FilePath $gitPath -Arguments @($successfulFetchConfiguration + @('-C', $HarnessPath, 'merge', '--ff-only', $remoteRef)) -FailureMessage 'Failed to apply the fetched Harness update'
+                    # The target tree is now complete locally, so prevent Git from silently
+                    # opening a large lazy-fetch request while it replaces worktree files.
+                    $previousNoLazyFetch = $env:GIT_NO_LAZY_FETCH
+                    $env:GIT_NO_LAZY_FETCH = '1'
+                    try {
+                        Invoke-CheckedCommand -FilePath $gitPath -Arguments @('-C', $HarnessPath, 'merge', '--quiet', '--ff-only', $remoteRef) -FailureMessage 'Failed to apply the fetched Harness update'
+                    } finally {
+                        $env:GIT_NO_LAZY_FETCH = $previousNoLazyFetch
+                    }
                     $updated = $true
                     $updateResult.coreStatus = 'installing'
                     Write-LauncherStatus 'Harness update completed.' Green

@@ -67,6 +67,7 @@ $payload = @(
     'DSH-Launcher.ps1'
     'DSH-CoreCompatibility.ps1'
     'DSH-CoreCleanCompatibility.ps1'
+    'DSH-CoreBlobPrefetch.ps1'
     'DSH-LauncherCompatibility.ps1'
     'DSH-LauncherUpdater.ps1'
     'DSH-ApplyLauncherUpdate.ps1'
