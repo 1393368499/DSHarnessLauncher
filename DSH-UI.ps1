@@ -811,8 +811,8 @@ function Start-WebUi {
     $script:activeJob = Start-BackgroundOperation -ScriptBlock {
         param($RepoPath, $ServerScriptPath, $WebLogPath)
 
-        $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-        $wasRunning = $null -ne $listener
+        $wasRunning = [DshNetworkProbe]::Begin(500).GetAwaiter().GetResult()
+        $portReady = $wasRunning
         if (-not $wasRunning) {
             '[DSH] Starting pnpm dsh web in the background...'
             Start-Process -FilePath $env:ComSpec `
@@ -822,17 +822,17 @@ function Start-WebUi {
 
             for ($attempt = 0; $attempt -lt 90; $attempt++) {
                 Start-Sleep -Seconds 1
-                $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($null -ne $listener) { break }
+                $portReady = [DshNetworkProbe]::Begin(500).GetAwaiter().GetResult()
+                if ($portReady) { break }
                 if (($attempt + 1) % 5 -eq 0) {
                     "[DSH] Waiting for WebUI... $($attempt + 1)s"
                 }
             }
         } else {
-            "[DSH] WebUI is already running (PID $($listener.OwningProcess))."
+            '[DSH] WebUI is already responding on port 3080.'
         }
 
-        if ($null -eq $listener) {
+        if (-not $portReady) {
             throw "WebUI did not become ready on port 3080. Check $RepoPath\dsh-web.log."
         }
 
@@ -932,6 +932,8 @@ function Restart-WebUi {
                 throw "WebUI is still listening on port 3080 (PID $($after.OwningProcess))."
             }
             "[DSH] Old WebUI stopped (PID $processId)."
+        } elseif ([DshNetworkProbe]::Begin(500).GetAwaiter().GetResult()) {
+            throw 'WebUI is responding on port 3080, but Windows did not identify its process. Open the running WebUI instead.'
         } else {
             '[DSH] WebUI was not running — starting a fresh instance.'
         }
@@ -952,16 +954,17 @@ function Restart-WebUi {
             -WorkingDirectory $RepoPath `
             -WindowStyle Hidden | Out-Null
 
+        $portReady = $false
         for ($attempt = 0; $attempt -lt 90; $attempt++) {
             Start-Sleep -Seconds 1
-            $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($null -ne $listener) { break }
+            $portReady = [DshNetworkProbe]::Begin(500).GetAwaiter().GetResult()
+            if ($portReady) { break }
             if (($attempt + 1) % 5 -eq 0) {
                 "[DSH] Waiting for WebUI... $($attempt + 1)s"
             }
         }
 
-        if ($null -eq $listener) {
+        if (-not $portReady) {
             throw "WebUI did not become ready on port 3080. Check $RepoPath\dsh-web.log."
         }
 

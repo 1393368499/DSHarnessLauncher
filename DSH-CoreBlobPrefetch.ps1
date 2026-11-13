@@ -76,16 +76,17 @@ for ($offset = 0; $offset -lt $total; $offset += $BatchSize) {
     $last = [Math]::Min($offset + $BatchSize - 1, $total - 1)
     $batch = @($missing[$offset..$last])
     $remaining = @(Get-MissingBlobs -ObjectIds $batch)
-    for ($attempt = 1; $remaining.Count -gt 0 -and $attempt -le 3; $attempt++) {
+    for ($attempt = 1; $remaining.Count -gt 0 -and $attempt -le 5; $attempt++) {
         $result = Invoke-BlobBatchFetch -ObjectIds $remaining -Direct:($attempt -eq 3)
         $remaining = @(Get-MissingBlobs -ObjectIds $remaining)
-        if ($remaining.Count -gt 0 -and $attempt -lt 3) {
-            Write-Output "[DSH][CorePrefetch][WARN] Batch download was interrupted; retrying $($remaining.Count) file(s)..."
-            Start-Sleep -Seconds 2
+        if ($remaining.Count -gt 0 -and $attempt -lt 5) {
+            $delaySeconds = [int][Math]::Min(30, [Math]::Pow(2, $attempt))
+            Write-Output "[DSH][CorePrefetch][WARN] Batch download was interrupted; retrying $($remaining.Count) file(s) in ${delaySeconds}s..."
+            Start-Sleep -Seconds $delaySeconds
         }
     }
     if ($remaining.Count -gt 0) {
-        throw "Could not download $($remaining.Count) core file(s) after three attempts. Last error: $($result.Detail)"
+        throw "Could not download $($remaining.Count) core file(s) after five attempts. Last error: $($result.Detail)"
     }
     Write-Output "[DSH][CorePrefetch] Ready $([Math]::Min($last + 1, $total))/$total missing files."
 }

@@ -16,6 +16,7 @@ $coreCompatibilityScript = Join-Path $launcherRoot 'DSH-CoreCompatibility.ps1'
 $coreCleanCompatibilityScript = Join-Path $launcherRoot 'DSH-CoreCleanCompatibility.ps1'
 $coreBlobPrefetchScript = Join-Path $launcherRoot 'DSH-CoreBlobPrefetch.ps1'
 $pluginUpdaterScript = Join-Path $launcherRoot 'DSH-PluginUpdater.ps1'
+$desktopWebSyncScript = Join-Path $launcherRoot 'DSH-DesktopWebSync.cjs'
 $pluginCompatibilityScript = Join-Path $launcherRoot 'DSH-PluginCompatibility.ps1'
 $bootstrapScript = Join-Path $launcherRoot 'DSH-Bootstrap.ps1'
 $launcherLogRoot = Join-Path $env:LOCALAPPDATA 'DSH\logs'
@@ -95,6 +96,60 @@ function Stop-WebServiceForCoreUpdate {
     throw 'The running Web service could not be stopped safely before the core update.'
 }
 
+function Test-LauncherLoopbackWebPort {
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $connection = $client.ConnectAsync('127.0.0.1', 3080)
+        return ($connection.Wait(500) -and $client.Connected)
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
+function Find-LauncherOwnedWebWorker {
+    $processes = @(Get-CimInstance Win32_Process)
+    $byId = @{}
+    foreach ($process in $processes) { $byId[[int]$process.ProcessId] = $process }
+    $serverPathPattern = [regex]::Escape($script:serverScript)
+    $harnessPathPattern = [regex]::Escape($script:HarnessPath)
+    foreach ($worker in $processes) {
+        if ($worker.Name -ne 'node.exe' -or $worker.CommandLine -notmatch '(?i)apps[/\\]cli[/\\]src[/\\]bin\.ts\s+web\s+--no-open(?:\s|$)') { continue }
+        $parentId = [int]$worker.ParentProcessId
+        for ($depth = 0; $depth -lt 8 -and $byId.ContainsKey($parentId); $depth++) {
+            $parent = $byId[$parentId]
+            if ($parent.Name -eq 'cmd.exe' -and $parent.CommandLine -match $serverPathPattern -and $parent.CommandLine -match $harnessPathPattern) {
+                $worker
+                break
+            }
+            $parentId = [int]$parent.ParentProcessId
+        }
+    }
+}
+
+function Stop-WebServiceForPluginSync {
+    if (-not (Test-LauncherLoopbackWebPort)) { return }
+    $workers = @(Find-LauncherOwnedWebWorker)
+    if ($workers.Count -ne 1) {
+        throw 'Stop the WebUI before syncing plugins. The launcher could not identify the Web service on port 3080.'
+    }
+    $workerId = [int]$workers[0].ProcessId
+    $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $listener -and [int]$listener.OwningProcess -ne $workerId) {
+        throw 'Port 3080 is being used by a different process. Close it before syncing plugins.'
+    }
+    $script:serviceWasRunning = $true
+    Write-LauncherStatus "Stopping the launcher Web service before syncing plugins (PID $workerId)..." Cyan
+    Stop-Process -Id $workerId -ErrorAction Stop
+    $script:serviceStoppedForUpdate = $true
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        if (-not (Test-LauncherLoopbackWebPort)) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'The Web service did not stop before syncing plugins.'
+}
+
 function Start-WebServiceAfterCoreUpdate {
     if (-not $script:serviceWasRunning -or -not $script:serviceStoppedForUpdate) { return }
     if (-not (Test-Path -LiteralPath $script:serverScript)) {
@@ -111,6 +166,10 @@ function Start-WebServiceAfterCoreUpdate {
         $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $listener) {
             Write-LauncherStatus "The Web service is running again (PID $($listener.OwningProcess))." Green
+            return
+        }
+        if ((Test-LauncherLoopbackWebPort) -and @(Find-LauncherOwnedWebWorker).Count -eq 1) {
+            Write-LauncherStatus "The launcher Web service is running again on port 3080." Green
             return
         }
         Start-Sleep -Milliseconds 500
@@ -547,12 +606,20 @@ try {
         }
     }
 
+    $profileHome = if ([string]::IsNullOrWhiteSpace($env:DSH_HOME)) {
+        Join-Path ([Environment]::GetFolderPath('UserProfile')) '.dsh'
+    } else {
+        $env:DSH_HOME
+    }
+    $mirrorDesktopPlugins = $CheckOnly -and
+        (Test-Path -LiteralPath (Join-Path $profileHome 'profiles\desktop\package.json') -PathType Leaf)
+
     $themePath = @(
         (Join-Path $launcherRoot 'maid-atelier'),
         (Join-Path $launcherRoot 'plugins\maid-atelier'),
         (Join-Path (Split-Path -Parent $launcherRoot) 'maid-atelier')
     ) | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'package.json') } | Select-Object -First 1
-    if (-not [string]::IsNullOrWhiteSpace($themePath)) {
+    if (-not $mirrorDesktopPlugins -and -not [string]::IsNullOrWhiteSpace($themePath)) {
         $profileRoot = if ([string]::IsNullOrWhiteSpace($env:DSH_HOME)) {
             Join-Path ([Environment]::GetFolderPath('UserProfile')) '.dsh'
         } else {
@@ -587,7 +654,41 @@ try {
         }
     }
 
-    if (Test-Path -LiteralPath $pluginUpdaterScript) {
+    if ($mirrorDesktopPlugins) {
+        Write-LauncherStatus 'Comparing Web plugins with the desktop profile...' Cyan
+        $previousSyncProxy = [Environment]::GetEnvironmentVariable('DSH_PLUGIN_SYNC_HTTPS_PROXY', 'Process')
+        try {
+            $proxy = & $gitPath -C $HarnessPath config --get-urlmatch http.proxy $repoUrl 2>$null
+            [Environment]::SetEnvironmentVariable('DSH_PLUGIN_SYNC_HTTPS_PROXY', [string]$proxy, 'Process')
+            $previousErrorPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $stage = @(& $nodePath $desktopWebSyncScript 'stage-plugins' $HarnessPath 2>&1 |
+                    ForEach-Object { ConvertTo-CommandOutputLine $_ })
+                $stageExitCode = $LASTEXITCODE
+            } finally {
+                $ErrorActionPreference = $previousErrorPreference
+            }
+            if ($stageExitCode -ne 0 -or $stage.Count -ne 1) {
+                $detail = if ($stage.Count -eq 1) { ' ' + $stage[0] } else { '' }
+                throw ('Could not prepare desktop plugin synchronization.' + $detail)
+            }
+            if ($stage[0] -eq 'aligned') {
+                Write-LauncherStatus 'Web plugins already match the desktop profile.' Green
+            } elseif ($stage[0] -eq 'missing') {
+                throw 'The desktop plugin manifest changed during the check.'
+            } else {
+                Stop-WebServiceForPluginSync
+                $applyArguments = @($desktopWebSyncScript, 'apply-plugins', $HarnessPath, $stage[0])
+                Invoke-CheckedCommand -FilePath $nodePath -Arguments $applyArguments -FailureMessage 'Could not apply the staged desktop plugins'
+                Write-LauncherStatus 'Web plugins now match the desktop profile.' Green
+            }
+        } catch {
+            Add-UpdateWarning ("Desktop plugin synchronization needs attention. " + $_.Exception.Message)
+        } finally {
+            [Environment]::SetEnvironmentVariable('DSH_PLUGIN_SYNC_HTTPS_PROXY', $previousSyncProxy, 'Process')
+        }
+    } elseif (Test-Path -LiteralPath $pluginUpdaterScript) {
         Write-LauncherStatus 'Checking installed Web profile plugins through the direct GitHub API...' Cyan
         try {
             Invoke-CheckedCommand -FilePath 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' `

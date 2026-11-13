@@ -134,8 +134,9 @@ try {
             $buildMarker = Join-Path $HarnessPath '.git\dsh-launcher-build-commit'
             $builtIdentity = if (Test-Path -LiteralPath $buildMarker) { (Get-Content -LiteralPath $buildMarker -Raw -Encoding UTF8).Trim() } else { '' }
             $compatibilityTarget = Join-Path $HarnessPath ($managedCoreTarget -replace '/', '\')
-            $currentBuildIdentity = if (Test-Path -LiteralPath $compatibilityTarget) {
-                "$commit|$(Get-FileSha256 -Path $compatibilityTarget)"
+            $cleanTarget = Join-Path $HarnessPath 'scripts\clean.ts'
+            $currentBuildIdentity = if ((Test-Path -LiteralPath $compatibilityTarget) -and (Test-Path -LiteralPath $cleanTarget)) {
+                "$commit|$(Get-FileSha256 -Path $compatibilityTarget)|$(Get-FileSha256 -Path $cleanTarget)"
             } else { '' }
             if ($builtIdentity -eq $currentBuildIdentity -and (Test-Path -LiteralPath (Join-Path $HarnessPath 'apps\cli\lib\bin.js'))) {
                 Add-DiagnosticCheck 'Harness' '构建状态' 'OK' "构建与提交 $($commit.Substring(0, 8)) 及兼容补丁一致"

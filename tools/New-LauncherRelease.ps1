@@ -75,6 +75,7 @@ $payload = @(
     'DSH-Diagnostics.ps1'
     'DSH-PluginManager.ps1'
     'DSH-PluginUpdater.ps1'
+    'DSH-DesktopWebSync.cjs'
     'DSH-PluginCompatibility.ps1'
     'DSH-UI.ps1'
     'DSH-Launcher.Runtime.dll'

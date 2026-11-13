@@ -75,7 +75,12 @@ function Get-CompatibilityStatus {
     $hasLegacy = $content.Contains($legacyDeclaration)
     $hasStable = $content.Contains($stableDeclaration)
     if ($hasLegacy -and $hasStable) { throw 'Both legacy and stable scheduler declarations were found; refusing an ambiguous edit.' }
-    if (-not $hasLegacy -and -not $hasStable) { return 'unsupported' }
+    if (-not $hasLegacy -and -not $hasStable) {
+        # Upstream replaced the symbol-keyed scheduler with scoped ToolExecutor providers,
+        # so a clean target without either declaration needs no compatibility edit.
+        if (Test-TargetIsClean) { return 'obsolete-fixed' }
+        return 'modified-unmanaged'
+    }
     if ($hasLegacy) { return 'vulnerable' }
     if (Test-TargetIsClean) { return 'official-fixed' }
 
@@ -90,11 +95,15 @@ function Get-CompatibilityStatus {
 $status = Get-CompatibilityStatus
 if ($Action -eq 'Status') {
     Write-Output "[DSH][CoreCompatibility][$($status.ToUpperInvariant())] $relativeTarget"
-    if ($status -in @('unsupported', 'modified-unmanaged')) { exit 2 }
+    if ($status -eq 'modified-unmanaged') { exit 2 }
     exit 0
 }
 
 if ($Action -eq 'Apply') {
+    if ($status -eq 'obsolete-fixed') {
+        Write-Output '[DSH][CoreCompatibility][OBSOLETE] Upstream uses scoped tool executors; the scheduler symbol patch is no longer needed.'
+        exit 0
+    }
     if ($status -eq 'official-fixed') {
         Write-Output "[DSH][CoreCompatibility][OFFICIAL-FIXED] Upstream already provides a stable scheduler identity."
         exit 0
@@ -120,6 +129,10 @@ if ($Action -eq 'Apply') {
 
 if ($status -eq 'vulnerable') {
     Write-Output '[DSH][CoreCompatibility][REMOVED] Managed compatibility is already absent.'
+    exit 0
+}
+if ($status -eq 'obsolete-fixed') {
+    Write-Output '[DSH][CoreCompatibility][OBSOLETE] Upstream uses scoped tool executors; nothing to restore.'
     exit 0
 }
 if ($status -eq 'official-fixed') {

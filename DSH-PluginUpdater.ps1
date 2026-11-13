@@ -4,6 +4,7 @@ param(
     [string]$ProfileName = 'web',
     [string]$ProfilePath,
     [string]$ApiBaseUrl = 'https://api.github.com',
+    [string]$NpmRegistry = 'https://registry.npmjs.org',
     [string]$CachePath,
     [int]$CacheTtlMinutes = 15,
     [string]$PluginName,
@@ -13,7 +14,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:npmPublishedVersions = @{}
+$script:npmPackageDocuments = @{}
 
 function Write-PluginStatus {
     param(
@@ -450,30 +451,60 @@ function Get-GitHubManifestAtTag {
     return Get-GitHubJson "/repos/$encodedRepo/contents/$encodedManifestPath`?ref=$encodedTag" 'application/vnd.github.raw+json'
 }
 
+function Get-NpmPackageDocument {
+    param([Parameter(Mandatory)][string]$Name)
+
+    if (-not $script:npmPackageDocuments.ContainsKey($Name)) {
+        $encodedName = [Uri]::EscapeDataString($Name)
+        $document = Invoke-RestMethod -UseBasicParsing -Uri ($NpmRegistry.TrimEnd('/') + '/' + $encodedName) -TimeoutSec 20
+        if ($null -eq $document.versions) { throw "npm returned no published versions for $Name" }
+        $script:npmPackageDocuments[$Name] = $document
+    }
+    return $script:npmPackageDocuments[$Name]
+}
+
 function Test-NpmVersionPublished {
     param(
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$Version
     )
 
-    if (-not $script:npmPublishedVersions.ContainsKey($Name)) {
-        try {
-            $encodedName = [Uri]::EscapeDataString($Name)
-            $packument = Invoke-RestMethod -UseBasicParsing -Uri "https://registry.npmjs.org/$encodedName" -TimeoutSec 20
-            $versions = @{}
-            if ($null -ne $packument.versions) {
-                foreach ($property in $packument.versions.PSObject.Properties) {
-                    $versions[[string]$property.Name] = $true
-                }
+    try {
+        $document = Get-NpmPackageDocument $Name
+        return $null -ne $document.versions.PSObject.Properties[$Version]
+    } catch {
+        # Keep GitHub discovery available during a temporary registry outage.
+        return $null
+    }
+}
+
+function Get-LatestNpmVersion {
+    param(
+        [Parameter(Mandatory)]$Plugin,
+        [Parameter(Mandatory)]$InstalledVersion
+    )
+
+    $document = Get-NpmPackageDocument $Plugin.Name
+    $includePrerelease = $ReleaseChannel -eq 'preview' -or
+        ($ReleaseChannel -eq 'auto' -and $script:harnessVersion.Pre.Count -gt 0) -or
+        $InstalledVersion.Pre.Count -gt 0
+    $best = $null
+    foreach ($property in $document.versions.PSObject.Properties) {
+        $candidate = $property.Value
+        if ([string]$candidate.name -ne $Plugin.Name -or $candidate.deprecated) { continue }
+        $version = ConvertTo-SemVer ([string]$candidate.version)
+        if ($null -eq $version -or $version.Text -ne [string]$property.Name) { continue }
+        if (-not $includePrerelease -and $version.Pre.Count -gt 0) { continue }
+        if (-not (Test-PluginCoreCompatibility $candidate)) { continue }
+        if ($null -eq $best -or (Compare-SemVer $version $best.Version) -gt 0) {
+            $best = [pscustomobject]@{
+                Version = $version
+                Tag = 'npm'
+                Channel = if ($version.Pre.Count -gt 0) { 'preview' } else { 'stable' }
             }
-            $script:npmPublishedVersions[$Name] = $versions
-        } catch {
-            # Registry reachability must not block GitHub update discovery. Returning
-            # null preserves the previous install-time fallback for transient outages.
-            return $null
         }
     }
-    return $script:npmPublishedVersions[$Name].ContainsKey($Version)
+    return $best
 }
 
 function Get-LatestGitHubVersion {
@@ -534,6 +565,17 @@ function Get-LatestGitHubVersion {
         } catch { }
     }
     return $best
+}
+
+function Get-LatestPublishedVersion {
+    param(
+        [Parameter(Mandatory)]$Plugin,
+        [Parameter(Mandatory)]$InstalledVersion
+    )
+
+    $candidate = Get-LatestGitHubVersion $Plugin $InstalledVersion
+    if ($null -ne $candidate) { return $candidate }
+    return Get-LatestNpmVersion $Plugin $InstalledVersion
 }
 
 try {
@@ -636,8 +678,8 @@ try {
 
             $installedVersion = ConvertTo-SemVer $plugin.InstalledVersion
             if ($null -eq $installedVersion) { throw "installed version is not semantic: $($plugin.InstalledVersion)" }
-            $latest = Get-LatestGitHubVersion $plugin $installedVersion
-            if ($null -eq $latest) { throw 'no matching semantic GitHub release or tag was found' }
+            $latest = Get-LatestPublishedVersion $plugin $installedVersion
+            if ($null -eq $latest) { throw 'no compatible published version was found on GitHub or npm' }
             $checked++
             $comparison = Compare-SemVer $latest.Version $installedVersion
             if ($comparison -gt 0) {
@@ -651,7 +693,7 @@ try {
             } elseif ($comparison -eq 0) {
                 Write-PluginStatus "$($plugin.Name): latest version $($installedVersion.Text)." 'OK'
             } else {
-                Write-PluginStatus "$($plugin.Name): installed $($installedVersion.Text) is newer than GitHub $($latest.Version.Text)." 'WARN'
+                Write-PluginStatus "$($plugin.Name): installed $($installedVersion.Text) is newer than the published candidate $($latest.Version.Text)." 'WARN'
             }
         } catch {
             Write-PluginStatus "$($plugin.Name): $($_.Exception.Message)" 'WARN'
@@ -777,7 +819,8 @@ try {
             $archiveUrl = "https://codeload.github.com/$repo/tar.gz/$commit"
             Write-PluginStatus "Downloading the $repo source archive once for all bundled packages..." 'UPDATE'
             $archiveHandler = New-Object System.Net.Http.HttpClientHandler
-            $archiveHandler.UseProxy = $false
+            # Archive downloads follow the user's system proxy, like package downloads.
+            $archiveHandler.UseProxy = $true
             $archiveClient = New-Object System.Net.Http.HttpClient($archiveHandler)
             $archiveClient.Timeout = [TimeSpan]::FromMinutes(3)
             try {

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "2.1.3",
+  "version": "2.1.4",
   "core": {
     "packageName": "@deepseek-ai/dsh-root",
     "minimumVersion": "0.1.2-alpha.2",
@@ -20,6 +20,7 @@
       "DSH-Bootstrap.ps1",
       "DSH-PluginManager.ps1",
       "DSH-PluginUpdater.ps1",
+      "DSH-DesktopWebSync.cjs",
       "DSH-PluginCompatibility.ps1",
       "DSH-Diagnostics.ps1",
       "DSH-UI.ps1",
