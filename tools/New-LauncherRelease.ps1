@@ -83,10 +83,10 @@ $payload = @(
     'LauncherWindow.xaml'
     'Start-DSH-Web.cmd'
     'launcher-manifest.json'
-    'DSH-unified-v5.ico'
+    'DSH-whale-girl-v6.ico'
     'README.md'
     'assets\DSH-office-maid-display.jpg'
-    'assets\DSHarness-v2-display.png'
+    'assets\DSH-whale-girl-display.png'
 )
 
 $missing = @($payload | Where-Object { -not (Test-Path -LiteralPath (Join-Path $launcherRoot $_)) })

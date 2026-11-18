@@ -88,11 +88,14 @@ if (-not $pnpmValid) {
     $env:PATH = (Join-Path $pnpmRoot 'node_modules\.bin') + ';' + $env:PATH
 }
 if (-not (Test-Path -LiteralPath $pnpmBin) -and -not $pnpmValid) { throw "pnpm $pnpmVersion is still unavailable." }
-$pnpmPathPrefix = if ($pnpmValid) { '' } else { "%LOCALAPPDATA%\DSH\tools\pnpm-$pnpmVersion\node_modules\.bin;" }
+# Persist the tools we actually validated, even when a previous bootstrap call
+# already put them on PATH. The hidden Web process starts with a fresh PATH.
+$activeToolDirectories = @('node.exe', 'pnpm.cmd', 'git.exe' | ForEach-Object {
+    Split-Path -Parent (Get-Command $_ -ErrorAction Stop).Source
+} | Select-Object -Unique)
 $activePathFile = Join-Path $toolRoot 'active-path.cmd'
-$activePath = '@echo off' + "`r`n" + 'set "PATH=' + $pnpmPathPrefix +
-    '%LOCALAPPDATA%\DSH\tools\node-v22.23.0\node-v22.23.0-win-x64;' +
-    '%LOCALAPPDATA%\DSH\tools\mingit-2.55.0.5\cmd;%PATH%"' + "`r`n"
+$activePath = '@echo off' + "`r`n" + 'set "PATH=' +
+    ($activeToolDirectories -join ';') + ';%PATH%"' + "`r`n"
 [IO.File]::WriteAllText($activePathFile, $activePath, (New-Object Text.ASCIIEncoding))
 if ($SkipNative) { return }
 

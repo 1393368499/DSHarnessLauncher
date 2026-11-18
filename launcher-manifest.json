@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "2.1.4",
+  "version": "2.1.5",
   "core": {
     "packageName": "@deepseek-ai/dsh-root",
     "minimumVersion": "0.1.2-alpha.2",
@@ -28,9 +28,9 @@
       "DSH-Launcher.Xaml.dll",
       "LauncherWindow.xaml",
       "Start-DSH-Web.cmd",
-      "DSH-unified-v5.ico",
+      "DSH-whale-girl-v6.ico",
       "assets/DSH-office-maid-display.jpg",
-      "assets/DSHarness-v2-display.png"
+      "assets/DSH-whale-girl-display.png"
     ]
   },
   "update": {

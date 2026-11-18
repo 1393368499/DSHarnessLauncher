@@ -129,16 +129,26 @@ function Find-LauncherOwnedWebWorker {
 }
 
 function Stop-WebServiceForPluginSync {
-    if (-not (Test-LauncherLoopbackWebPort)) { return }
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        try {
+            $connection = $client.ConnectAsync('127.0.0.1', 3080)
+            if (-not $connection.Wait(500) -or -not $client.Connected) { return }
+        } catch { return }
+        # Some Windows listeners report PID 0. Match the server side of this
+        # specific loopback connection to the launcher-owned worker instead.
+        $probePort = $client.Client.LocalEndPoint.Port
+        $owners = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 3080 `
+            -RemoteAddress '127.0.0.1' -RemotePort $probePort -State Established -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique)
+    } finally {
+        $client.Dispose()
+    }
     $workers = @(Find-LauncherOwnedWebWorker)
-    if ($workers.Count -ne 1) {
+    if ($workers.Count -ne 1 -or $owners.Count -ne 1 -or [int]$owners[0] -ne [int]$workers[0].ProcessId) {
         throw 'Stop the WebUI before syncing plugins. The launcher could not identify the Web service on port 3080.'
     }
     $workerId = [int]$workers[0].ProcessId
-    $listener = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $listener -and [int]$listener.OwningProcess -ne $workerId) {
-        throw 'Port 3080 is being used by a different process. Close it before syncing plugins.'
-    }
     $script:serviceWasRunning = $true
     Write-LauncherStatus "Stopping the launcher Web service before syncing plugins (PID $workerId)..." Cyan
     Stop-Process -Id $workerId -ErrorAction Stop
@@ -237,7 +247,8 @@ function Invoke-CheckedCommand {
     param(
         [Parameter(Mandatory)][string]$FilePath,
         [Parameter(Mandatory)][string[]]$Arguments,
-        [string]$FailureMessage = 'Command failed'
+        [string]$FailureMessage = 'Command failed',
+        [switch]$NoInput
     )
 
     # Windows PowerShell can promote native stderr records (including Git progress)
@@ -246,24 +257,74 @@ function Invoke-CheckedCommand {
     # exit code after the pipeline completes.
     $previousErrorActionPreference = $ErrorActionPreference
     $previousConsoleEncoding = [Console]::OutputEncoding
+    $previousCi = $env:CI
     $ErrorActionPreference = 'Continue'
     try {
         # Node, pnpm, Vite and Git emit UTF-8. Windows PowerShell otherwise decodes
         # their output with the active legacy code page, corrupting status symbols.
         [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-        & $FilePath @Arguments 2>&1 | ForEach-Object {
+        $writeOutput = {
             $line = ConvertTo-CommandOutputLine $_
             Write-Host $line
             Write-LauncherLogLine $line
+        }
+        if ($NoInput) {
+            # A hidden installer cannot answer prompts. Close stdin so pnpm
+            # fails before purging an incompatible installation instead of hanging.
+            # CI mode would auto-approve that purge even with stdin closed.
+            $env:CI = $null
+            $null | & $FilePath @Arguments 2>&1 | ForEach-Object $writeOutput
+        } else {
+            & $FilePath @Arguments 2>&1 | ForEach-Object $writeOutput
         }
         $commandExitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
         [Console]::OutputEncoding = $previousConsoleEncoding
+        if ($NoInput) { $env:CI = $previousCi }
     }
     if ($commandExitCode -ne 0) {
         throw "$FailureMessage (exit code: $commandExitCode)"
     }
+}
+
+function Get-HarnessDependencyInstallArguments {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $installArguments = @('install', '--frozen-lockfile')
+    $modulesManifest = Join-Path $Path 'node_modules\.modules.yaml'
+    if (-not (Test-Path -LiteralPath $modulesManifest -PathType Leaf)) {
+        return $installArguments
+    }
+
+    # pnpm 11 writes JSON under this historical YAML filename. Older pnpm
+    # installations use a top-level YAML scalar for the same storeDir field.
+    $text = Get-Content -LiteralPath $modulesManifest -Raw -Encoding UTF8
+    if ($text.TrimStart().StartsWith('{')) {
+        $storePath = [string](($text | ConvertFrom-Json).storeDir)
+    } elseif ($text -match '(?m)^storeDir:\s*(.+?)\s*$') {
+        $storePath = $Matches[1].Trim()
+        if ($storePath.StartsWith('"')) {
+            $storePath = [string]($storePath | ConvertFrom-Json)
+        } elseif ($storePath.StartsWith("'")) {
+            $storePath = $storePath.Trim("'").Replace("''", "'")
+        }
+    } else {
+        throw 'The existing pnpm installation does not declare its store directory. Preserve node_modules and repair its metadata before retrying.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($storePath) -or -not [IO.Path]::IsPathRooted($storePath)) {
+        throw 'The existing pnpm store directory is invalid. Dependency installation was stopped without replacing node_modules.'
+    }
+    $storePath = [IO.Path]::GetFullPath($storePath)
+    if (-not (Test-Path -LiteralPath $storePath -PathType Container)) {
+        throw "The existing pnpm store directory is unavailable: $storePath"
+    }
+    # The metadata records the versioned store; pnpm's option takes its parent.
+    $storeRoot = if ((Split-Path -Leaf $storePath) -match '^v\d+$') {
+        Split-Path -Parent $storePath
+    } else { $storePath }
+    return $installArguments + @('--config.store-dir=' + $storeRoot)
 }
 
 function Invoke-CoreCompatibility {
@@ -547,7 +608,8 @@ try {
             Initialize-NativeBuildEnvironment
             $reason = if ($nodeModulesMissing) { 'Dependencies are not installed' } elseif ($dependenciesChanged) { 'The dependency lock file changed' } else { 'Dependency installation has not been verified for this lockfile and Node.js version' }
             Write-LauncherStatus "$reason. Synchronizing dependencies..." Cyan
-            Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('install', '--frozen-lockfile') -FailureMessage 'Failed to install Harness dependencies'
+            $installArguments = @(Get-HarnessDependencyInstallArguments -Path $HarnessPath)
+            Invoke-CheckedCommand -FilePath $pnpmPath -Arguments $installArguments -NoInput -FailureMessage 'Failed to install Harness dependencies'
             Set-Content -LiteralPath $dependencyMarker -Value $dependencyIdentity -Encoding UTF8
             Write-LauncherStatus 'Dependency synchronization completed.' Green
         } elseif ($updated) {
@@ -587,7 +649,8 @@ try {
             Invoke-CheckedCommand -FilePath $gitPath -Arguments @('-C', $HarnessPath, 'reset', '--hard', $localBefore) -FailureMessage 'Failed to restore the previous Harness revision'
             $restoredLockHash = if (Test-Path -LiteralPath $lockFile) { Get-FileSha256 -Path $lockFile } else { '' }
             $restoredDependencyIdentity = "$restoredLockHash|$nodeIdentity"
-            Invoke-CheckedCommand -FilePath $pnpmPath -Arguments @('install', '--frozen-lockfile') -FailureMessage 'Failed to restore the previous Harness dependencies'
+            $installArguments = @(Get-HarnessDependencyInstallArguments -Path $HarnessPath)
+            Invoke-CheckedCommand -FilePath $pnpmPath -Arguments $installArguments -NoInput -FailureMessage 'Failed to restore the previous Harness dependencies'
             Set-Content -LiteralPath $dependencyMarker -Value $restoredDependencyIdentity -Encoding UTF8
             [void](Invoke-CoreCompatibility -Action Apply)
             [void](Invoke-CoreCompatibility -Action Apply -ScriptPath $coreCleanCompatibilityScript)
@@ -619,7 +682,7 @@ try {
         (Join-Path $launcherRoot 'plugins\maid-atelier'),
         (Join-Path (Split-Path -Parent $launcherRoot) 'maid-atelier')
     ) | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'package.json') } | Select-Object -First 1
-    if (-not $mirrorDesktopPlugins -and -not [string]::IsNullOrWhiteSpace($themePath)) {
+    if (-not $CheckOnly -and -not [string]::IsNullOrWhiteSpace($themePath)) {
         $profileRoot = if ([string]::IsNullOrWhiteSpace($env:DSH_HOME)) {
             Join-Path ([Environment]::GetFolderPath('UserProfile')) '.dsh'
         } else {
@@ -688,6 +751,8 @@ try {
         } finally {
             [Environment]::SetEnvironmentVariable('DSH_PLUGIN_SYNC_HTTPS_PROXY', $previousSyncProxy, 'Process')
         }
+    } elseif ($CheckOnly) {
+        Add-UpdateWarning 'Desktop plugin profile was not found. Web plugin synchronization was skipped.'
     } elseif (Test-Path -LiteralPath $pluginUpdaterScript) {
         Write-LauncherStatus 'Checking installed Web profile plugins through the direct GitHub API...' Cyan
         try {

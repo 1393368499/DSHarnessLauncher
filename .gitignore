@@ -29,7 +29,7 @@
 /DSH-unified-v4.ico
 
 # assets 只发布启动器运行期真正引用的图片
-#（DSH-UI.ps1 中 maidImagePath / brandIconPath / whalePath）
+#（DSH-UI.ps1 中 maidImagePath / brandIconPath）
 /assets/*
 !/assets/DSH-office-maid-display.jpg
-!/assets/DSHarness-v2-display.png
+!/assets/DSH-whale-girl-display.png

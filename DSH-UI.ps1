@@ -26,7 +26,7 @@ $diagnosticsScript = Join-Path $launcherRoot 'DSH-Diagnostics.ps1'
 $serverScript = Join-Path $launcherRoot 'Start-DSH-Web.cmd'
 $appUserModelId = 'DeepSeek.DSH.WhaleMaidLauncher'
 $launcherExecutable = Join-Path $launcherRoot 'DSH.exe'
-$launcherIconPath = Join-Path $launcherRoot 'DSH-unified-v5.ico'
+$launcherIconPath = Join-Path $launcherRoot 'DSH-whale-girl-v6.ico'
 $launcherRelaunchCommand = '"' + $launcherExecutable + '"'
 $launcherIconResource = $launcherIconPath + ',0'
 $launcherVersion = 'unknown'
@@ -303,13 +303,13 @@ function New-OptimizedBitmapImage {
 if ($null -ne $headerVersionLabel) { $headerVersionLabel.Text = $launcherVersionLabel }
 if ($null -ne $launcherVersionText) { $launcherVersionText.Text = $launcherVersionLabel }
 
-$iconPath = Join-Path $launcherRoot 'DSH-unified-v5.ico'
+$iconPath = Join-Path $launcherRoot 'DSH-whale-girl-v6.ico'
 if (Test-Path -LiteralPath $iconPath) {
     try { $window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$iconPath) } catch { }
 }
 
 $maidImagePath = Join-Path $launcherRoot 'assets\DSH-office-maid-display.jpg'
-$brandIconPath = Join-Path $launcherRoot 'assets\DSHarness-v2-display.png'
+$brandIconPath = Join-Path $launcherRoot 'assets\DSH-whale-girl-display.png'
 if (Test-Path -LiteralPath $brandIconPath) {
     try {
         $brandIcon.Source = New-OptimizedBitmapImage -Path $brandIconPath -DecodePixelWidth 96
@@ -337,7 +337,7 @@ $script:serviceProbeTask = $null
 $webAddress = 'http://127.0.0.1:3080/'
 
 $trayIcon = New-Object System.Windows.Forms.NotifyIcon
-$trayIcon.Icon = New-Object System.Drawing.Icon -ArgumentList (Join-Path $launcherRoot 'DSH-unified-v5.ico')
+$trayIcon.Icon = New-Object System.Drawing.Icon -ArgumentList (Join-Path $launcherRoot 'DSH-whale-girl-v6.ico')
 $trayIcon.Text = "DSH $launcherVersionLabel - DeepSeek Harness"
 $trayIcon.Visible = $true
 
@@ -1069,7 +1069,7 @@ function Show-PluginManager {
     $dialog.FontFamily = 'Segoe UI Variable, Microsoft YaHei UI'
 
     # 标题栏 / 任务栏图标从 PowerShell 默认图标换成 DSH 黑鲸图标
-    $dialogIconPath = Join-Path $launcherRoot 'DSH-unified-v5.ico'
+    $dialogIconPath = Join-Path $launcherRoot 'DSH-whale-girl-v6.ico'
     if (Test-Path -LiteralPath $dialogIconPath) {
         try { $dialog.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$dialogIconPath) } catch { }
     }
@@ -1243,10 +1243,7 @@ function Show-PluginManager {
     $whale.Height = 26
     $whale.Stretch = 'Uniform'
     [Windows.Media.RenderOptions]::SetBitmapScalingMode($whale, [Windows.Media.BitmapScalingMode]::HighQuality)
-    $whalePath = Join-Path $launcherRoot 'assets\DSHarness-v2-display.png'
-    if (Test-Path -LiteralPath $whalePath) {
-        try { $whale.Source = New-OptimizedBitmapImage -Path $whalePath -DecodePixelWidth 64 } catch { }
-    }
+    $whale.Source = $brandIcon.Source
     $brandStack.Children.Add($whale) | Out-Null
 
     $titleBlock = New-Object Windows.Controls.TextBlock

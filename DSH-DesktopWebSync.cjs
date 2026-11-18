@@ -17,6 +17,7 @@ const stagePrefix = '.web-desktop-sync-'
 const sourceNames = [manifestName, lockName, patchName]
 const targetNames = [manifestName, lockName, workspaceName, patchName]
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
+const registryVersion = /^[~^]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const modelIds = new Set([
   'agent-default-model', 'llm-pi-ai', 'llm-deepseek', 'llm-deepseek-account', 'llm-deepseek-api-key',
 ])
@@ -49,7 +50,7 @@ function parseManifest(buffer) {
 
 function validateDesktopSpecs(dependencies) {
   for (const [name, spec] of dependencies) {
-    if (/^[~^]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(spec) ||
+    if (registryVersion.test(spec) ||
         /^github:[\w.-]+\/[\w.-]+#[a-f0-9]{40}$/i.test(spec) ||
         /^(?:link|file):[A-Za-z]:[\\/][^\r\n]+$/.test(spec)) continue
     throw new Error('Unsupported or unpinned desktop plugin source: ' + name)
@@ -61,8 +62,8 @@ async function installedVersions(directory, dependencies) {
   for (const [name] of dependencies) {
     const file = await readOptional(join(directory, 'node_modules', name, manifestName))
     if (!file) { versions.push(null); continue }
-    const { version } = JSON.parse(file.toString('utf8').replace(/^\uFEFF/, ''))
-    versions.push(typeof version === 'string' ? version : null)
+    const manifest = JSON.parse(file.toString('utf8').replace(/^\uFEFF/, ''))
+    versions.push(manifest.name === name && typeof manifest.version === 'string' ? manifest.version : null)
   }
   return versions
 }
@@ -151,12 +152,51 @@ async function runtimeTools(harness) {
   }
   return {
     ...await load(cli, '@deepseek-ai/dsh-plugin-manager/operations'),
+    ...await load(cli, '@deepseek-ai/dsh-official-bundles'),
     ...await load(manager, '@deepseek-ai/dsh-atomic-write'),
     ...await load(manager, '@deepseek-ai/dsh-app-boot'),
   }
 }
 
+function lockDependencies(lock) {
+  return lock?.importers?.['.']?.dependencies ?? {}
+}
+
+function mismatchedPluginLocks(lock, desktopLock, dependencies, substitutions) {
+  const entries = lockDependencies(lock)
+  const desktopEntries = lockDependencies(desktopLock)
+  return dependencies.filter(([name, spec]) => {
+    const entry = entries[name]
+    if (entry?.specifier !== spec || typeof entry.version !== 'string') return true
+    if (substitutions.has(name)) {
+      const resolution = lock.packages?.[`${name}@${spec}`]?.resolution
+      return entry.version !== spec || typeof resolution?.integrity !== 'string'
+    }
+    // pnpm can rebind peer contexts when the official packages change. Match
+    // the same package release and its locked resolution, not the peer suffix.
+    const reference = desktopEntries[name]?.version?.split('(')[0]
+    if (entry.version.split('(')[0] !== reference) return true
+    const key = `${name}@${reference}`
+    return !same(lock.packages?.[key]?.resolution, desktopLock.packages?.[key]?.resolution)
+  }).map(([name]) => name)
+}
+
+async function collectPluginFlags(directory, name, tools, pluginIds) {
+  const manifest = JSON.parse(await fs.readFile(join(directory, manifestName), 'utf8'))
+  if (manifest.name !== name || tools.evaluatePluginCompatibility(manifest)) {
+    throw new Error('Web compatibility rejected: ' + name)
+  }
+  if (!manifest.dsh?.bundle) return
+  tools.assertBundlePlatform(manifest.dsh.bundle.platforms, process.platform)
+  for (const path of tools.bundlePatchPaths(directory, manifest.dsh.bundle)) {
+    for (const patch of tools.loadOverlayPatches('dsh', path)) {
+      for (const entry of patch.insert ?? []) if (typeof entry?.id === 'string') pluginIds.add(entry.id)
+    }
+  }
+}
+
 async function preparePlugins(harness, desktop, web, tools) {
+  const [source, target] = await Promise.all([fingerprints(desktop, sourceNames), fingerprints(web, targetNames)])
   const raw = await readOptional(join(desktop, manifestName))
   if (!raw) return 'missing'
   const desired = parseManifest(raw)
@@ -164,58 +204,59 @@ async function preparePlugins(harness, desktop, web, tools) {
   const expected = await installedVersions(desktop, desired.dependencies)
   if (expected.includes(null)) throw new Error('Some desktop plugin packages are missing. Repair the desktop profile first.')
   const current = parseManifest(await fs.readFile(join(web, manifestName)))
-  const [source, target] = await Promise.all([fingerprints(desktop, sourceNames), fingerprints(web, targetNames)])
   if (!source[1] || !target[2]) throw new Error('Desktop lockfile or Web package policy is missing.')
 
   const yaml = yamlTools(harness)
+  const desktopLock = yaml.parse(await fs.readFile(join(desktop, lockName), 'utf8'))
+  const webLock = yaml.parse((await readOptional(join(web, lockName)))?.toString('utf8') ?? '')
   const desktopPatch = patchDocument(yaml, (await readOptional(join(desktop, patchName)))?.toString('utf8'))
   const webPatch = patchDocument(yaml, (await readOptional(join(web, patchName)))?.toString('utf8'))
-  const pluginIds = new Set()
-  for (const [name] of desired.dependencies) {
+  const substitutions = new Set()
+  const dependencies = []
+  for (const [index, [name, spec]] of desired.dependencies.entries()) {
     const directory = join(desktop, 'node_modules', name)
     const manifest = JSON.parse(await fs.readFile(join(directory, manifestName), 'utf8'))
-    const { dsh } = manifest
-    if (tools.evaluatePluginCompatibility(manifest)) throw new Error('Web compatibility rejected: ' + name)
-    if (!dsh?.bundle) continue
-    tools.assertBundlePlatform(dsh.bundle.platforms, process.platform)
-    for (const path of tools.bundlePatchPaths(directory, dsh.bundle)) {
-      for (const patch of tools.loadOverlayPatches('dsh', path)) {
-        for (const entry of patch.insert ?? []) if (typeof entry?.id === 'string') pluginIds.add(entry.id)
-      }
+    if (!tools.evaluatePluginCompatibility(manifest)) {
+      dependencies.push([name, spec])
+      continue
     }
+    // Official on-demand packages are released in lockstep with the core.
+    // Preserve desktop membership, and keep the Web runtime's exact version.
+    if (!tools.ON_DEMAND_BUNDLES?.includes(name) || !registryVersion.test(spec)) {
+      throw new Error('Web compatibility rejected: ' + name)
+    }
+    const version = tools.getDshRuntimeVersion()
+    substitutions.add(name)
+    dependencies.push([name, version])
+    expected[index] = version
   }
-  const preference = row => yaml.isMap(row) && pluginIds.has(row.get('id')) && typeof row.get('disabled') === 'boolean'
-  const flags = rows => rows.filter(preference).map(row => ({ id: row.get('id'), disabled: row.get('disabled') }))
-  const desktopFlags = flags(desktopPatch.contents.items)
-  const flagChanges = !same(desktopFlags, flags(webPatch.contents.items))
-  const pluginChanges = !same(desired.dependencies, current.dependencies) || !same(desired.bundles, current.bundles) ||
-    source[1] !== target[1] || !same(expected, await installedVersions(web, current.dependencies))
-  if (!pluginChanges && !flagChanges) return 'aligned'
+
+  const pluginChanges = !same(dependencies, current.dependencies) || !same(desired.bundles, current.bundles) ||
+    !same(expected, await installedVersions(web, dependencies)) ||
+    (substitutions.size === 0 ? source[1] !== target[1] : mismatchedPluginLocks(webLock, desktopLock, dependencies, substitutions).length > 0)
 
   const stage = await fs.mkdtemp(join(dirname(web), stagePrefix))
   try {
-    if (flagChanges) {
-      const previousFlags = new Set(webPatch.contents.items.filter(preference))
-      for (const row of previousFlags) row.delete('disabled')
-      webPatch.contents.items = webPatch.contents.items.filter(row => !previousFlags.has(row) || row.items.length > 1)
-      for (const flag of desktopFlags) webPatch.contents.items.push(webPatch.createNode(flag))
-      await fs.writeFile(join(stage, patchName), webPatch.toString(), { flag: 'wx' })
-    }
-
     if (pluginChanges) {
-      current.manifest.dependencies = Object.fromEntries(desired.dependencies)
+      current.manifest.dependencies = Object.fromEntries(dependencies)
       current.manifest.dsh.profile.bundles = desired.bundles
       await fs.writeFile(join(stage, manifestName), JSON.stringify(current.manifest, null, 2) + '\n')
       await fs.copyFile(join(desktop, lockName), join(stage, lockName))
       await fs.copyFile(join(web, workspaceName), join(stage, workspaceName))
-      if (!await copyLockedDesktopCache(desktop, stage, desired.dependencies, source[1])) {
+      if (substitutions.size > 0 || !await copyLockedDesktopCache(desktop, stage, dependencies, source[1])) {
         const proxy = process.env.DSH_PLUGIN_SYNC_HTTPS_PROXY
         const env = proxy && /^http:\/\/127\.0\.0\.1:\d{1,5}\/?$/.test(proxy)
           ? { HTTPS_PROXY: proxy, https_proxy: proxy, npm_config_https_proxy: proxy }
           : {}
+        const metadata = await readOptional(join(web, 'node_modules', '.modules.yaml'))
+        const existingStore = metadata && yaml.parse(metadata.toString('utf8'))?.storeDir
+        const store = typeof existingStore === 'string' && resolve(existingStore) === existingStore
+          ? [ '--config.store-dir=' + (/^v\d+$/.test(basename(existingStore)) ? dirname(existingStore) : existingStore) ]
+          : []
+        const lockMode = substitutions.size > 0 ? '--no-frozen-lockfile' : '--frozen-lockfile'
         const result = await tools.runPluginCommand(
           { profile: 'web', dir: stage, cwd: stage, installAnchor: join(harness, manifestName) },
-          ['install', '--frozen-lockfile', '--ignore-scripts', '--prefer-offline', '--fetch-retries=1', '--fetch-timeout=150000'],
+          ['install', lockMode, '--ignore-scripts', '--prefer-offline', '--fetch-retries=1', '--fetch-timeout=150000', ...store],
           { execution: 'service', outputBytes: 4096, idleTimeoutMs: 180000, activateNewBundles: false, env },
         )
         if (result.exitCode !== 0) {
@@ -223,9 +264,35 @@ async function preparePlugins(harness, desktop, web, tools) {
           throw new Error(names.length ? 'Web compatibility rejected: ' + names.join(', ') : 'Locked desktop plugin download failed.')
         }
       }
-      if (!same(expected, await installedVersions(stage, desired.dependencies))) throw new Error('Staged packages differ from desktop versions.')
-      if ((await fingerprints(stage, [lockName]))[0] !== source[1]) throw new Error('Plugin lockfile changed during installation.')
+      if (!same(expected, await installedVersions(stage, dependencies))) throw new Error('Staged plugin versions differ from the synchronization plan.')
+      if (substitutions.size === 0 && (await fingerprints(stage, [lockName]))[0] !== source[1]) {
+        throw new Error('Plugin lockfile changed unexpectedly during installation.')
+      }
+      if (substitutions.size > 0) {
+        const updatedLock = yaml.parse(await fs.readFile(join(stage, lockName), 'utf8'))
+        const mismatches = mismatchedPluginLocks(updatedLock, desktopLock, dependencies, substitutions)
+        if (mismatches.length) throw new Error('Plugin lockfile changed unexpectedly for: ' + mismatches.join(', '))
+      }
       await setWebStorePath(yaml, stage, web)
+    }
+
+    const pluginIds = new Set()
+    const pluginRoot = join(pluginChanges ? stage : web, 'node_modules')
+    for (const [name] of dependencies) await collectPluginFlags(join(pluginRoot, name), name, tools, pluginIds)
+    const preference = row => yaml.isMap(row) && pluginIds.has(row.get('id')) && typeof row.get('disabled') === 'boolean'
+    const flags = rows => rows.filter(preference).map(row => ({ id: row.get('id'), disabled: row.get('disabled') }))
+    const desktopFlags = flags(desktopPatch.contents.items)
+    const flagChanges = !same(desktopFlags, flags(webPatch.contents.items))
+    if (!pluginChanges && !flagChanges) {
+      await fs.rmdir(stage)
+      return 'aligned'
+    }
+    if (flagChanges) {
+      const previousFlags = new Set(webPatch.contents.items.filter(preference))
+      for (const row of previousFlags) row.delete('disabled')
+      webPatch.contents.items = webPatch.contents.items.filter(row => !previousFlags.has(row) || row.items.length > 1)
+      for (const flag of desktopFlags) webPatch.contents.items.push(webPatch.createNode(flag))
+      await fs.writeFile(join(stage, patchName), webPatch.toString(), { flag: 'wx' })
     }
     await fs.writeFile(join(stage, 'state.json'), JSON.stringify({ source, target, pluginChanges, flagChanges }))
     return stage
